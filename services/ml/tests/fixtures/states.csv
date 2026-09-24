@@ -1,0 +1,2 @@
+sensor_type,state_set_id,state_name,alarm_flag
+Датчик дыма,smoke-states,Норма,false

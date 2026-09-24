@@ -1,0 +1,3 @@
+channel_id,engineering_system_type,sensor_type,sensor_name,object_id,object_level,object_name,level2_object_id,level2_object_name,level1_object_id,level1_object_name
+001,Пожарная система,Датчик дыма,Дымовой канал,object-1,3,Шахта 1,area-1,Участок 1,mine-1,Шахта
+002,Пожарная система,Датчик дыма,Дымовой канал 2,object-2,3,Шахта 2,area-1,Участок 1,mine-1,Шахта
