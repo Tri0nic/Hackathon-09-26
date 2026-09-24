@@ -325,7 +325,7 @@ def prepare(
         "device_metadata": asdict(age_config),
         "device_seed": device_seed,
         "quality_thresholds": asdict(thresholds),
-        "quality_calibration": asdict(calibration),
+        "quality_calibration": calibration.to_dict(),
         "proxy_rule_version": PROXY_RULE_VERSION,
         "label_observed_until": observed_until.isoformat(),
     }

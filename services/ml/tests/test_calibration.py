@@ -158,6 +158,44 @@ def test_round_trip_canonical_versions_provenance_and_float(
             calibration.read_calibration(path)
 
 
+@pytest.mark.parametrize("loaded", [False, True])
+def test_frozen_provenance_cannot_be_mutated(
+    calibration: ModuleType, tmp_path: Path, loaded: bool
+) -> None:
+    supplied_hashes = hashes()
+    value = calibration.calibrate_thresholds(profiles(), supplied_hashes, seed=42)
+    path = tmp_path / "frozen.json"
+    calibration.write_calibration(path, value)
+    before = path.read_bytes()
+    if loaded:
+        value = calibration.read_calibration(path)
+    supplied_hashes.clear()
+    with pytest.raises((AttributeError, TypeError)):
+        value.source_sha256.clear()
+    with pytest.raises(TypeError):
+        value.source_sha256["train-a.csv"] = "c" * 64
+    exported = value.to_dict()
+    exported["source_sha256"].clear()
+    assert dict(value.source_sha256) == hashes()
+    calibration.write_calibration(path, value)
+    assert path.read_bytes() == before
+    assert calibration.read_calibration(path) == value
+
+
+def test_writer_revalidates_provenance_before_overwriting_artifact(
+    calibration: ModuleType, tmp_path: Path
+) -> None:
+    value = calibration.calibrate_thresholds(profiles(), hashes(), seed=42)
+    path = tmp_path / "frozen.json"
+    calibration.write_calibration(path, value)
+    before = path.read_bytes()
+    # Deliberately bypass the public frozen interface to check the write boundary.
+    object.__setattr__(value, "source_sha256", {})
+    with pytest.raises(ValueError, match="source_sha256"):
+        calibration.write_calibration(path, value)
+    assert path.read_bytes() == before
+
+
 def test_sparse_profiles_have_safe_bounds_and_null_rate_fallback(
     calibration: ModuleType,
 ) -> None:

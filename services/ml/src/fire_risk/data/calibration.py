@@ -3,10 +3,11 @@
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from hashlib import sha256
 from math import ceil
 from pathlib import Path
+from types import MappingProxyType
 
 import polars as pl
 
@@ -45,7 +46,7 @@ class CalibratedThresholds:
     schema_version: str
     calibration_version: str
     train_periods: tuple[str, ...]
-    source_sha256: dict[str, str]
+    source_sha256: Mapping[str, str]
     seed: int
     rationale: str
     implementation_revision: str
@@ -66,7 +67,7 @@ class CalibratedThresholds:
                 raise ValueError(f"{name} must be nonempty")
         if not isinstance(self.thresholds, QualityThresholds):
             raise TypeError("thresholds must be QualityThresholds")
-        if not isinstance(self.source_sha256, dict) or not self.source_sha256:
+        if not isinstance(self.source_sha256, Mapping) or not self.source_sha256:
             raise ValueError("source_sha256 must contain source hashes")
         for name, digest in self.source_sha256.items():
             if (
@@ -77,8 +78,24 @@ class CalibratedThresholds:
             ):
                 raise ValueError("source_sha256 requires source names and SHA-256 hex")
         object.__setattr__(
-            self, "source_sha256", dict(sorted(self.source_sha256.items()))
+            self,
+            "source_sha256",
+            MappingProxyType(dict(sorted(self.source_sha256.items()))),
         )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a validated JSON snapshot without exposing mutable provenance."""
+        value = replace(self)
+        return {
+            "schema_version": value.schema_version,
+            "calibration_version": value.calibration_version,
+            "train_periods": value.train_periods,
+            "source_sha256": dict(value.source_sha256),
+            "seed": value.seed,
+            "rationale": value.rationale,
+            "implementation_revision": value.implementation_revision,
+            "thresholds": asdict(value.thresholds),
+        }
 
 
 def _source_revision() -> str:
@@ -197,7 +214,7 @@ def calibrate_thresholds(
 def write_calibration(path: Path, value: CalibratedThresholds) -> None:
     """Persist canonical UTF-8 JSON (sorted keys, finite floats, LF newline)."""
     payload = json.dumps(
-        asdict(value),
+        value.to_dict(),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
