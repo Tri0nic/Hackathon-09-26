@@ -68,3 +68,21 @@ def test_coverage_report_counts_unknown_channels_and_unmapped_pairs() -> None:
     assert report.unmapped_type_value_pairs == {
         ("Датчик дыма", "Обнаружен дым"): 1
     }
+
+
+def test_conflicting_state_rows_are_reported_and_not_counted_as_covered(
+    tmp_path: Path,
+) -> None:
+    states = tmp_path / "states.csv"
+    source = (FIXTURES / "states.csv").read_text(encoding="utf-8")
+    states.write_text(
+        source + "Датчик дыма,other-states,Норма,true\n", encoding="utf-8"
+    )
+
+    report = build_coverage_report(events_fixture(), FIXTURES / "channels.csv", states)
+
+    assert report.conflicting_type_value_pairs == {("Датчик дыма", "Норма"): 1}
+    assert report.unmapped_type_value_pairs == {
+        ("Датчик дыма", "Обнаружен дым"): 1,
+        ("Датчик дыма", "Норма"): 1,
+    }

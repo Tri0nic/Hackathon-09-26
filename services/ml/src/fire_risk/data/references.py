@@ -1,6 +1,6 @@
 """Join reference metadata and report coverage of observed event values."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import polars as pl
@@ -30,6 +30,7 @@ class CoverageReport:
     total_events: int
     unknown_channel_events: int
     unmapped_type_value_pairs: dict[tuple[str, str], int]
+    conflicting_type_value_pairs: dict[tuple[str, str], int] = field(default_factory=dict)
 
 
 def join_channels(events: pl.LazyFrame, channels: Path) -> pl.LazyFrame:
@@ -70,15 +71,30 @@ def build_coverage_report(
         pl.col("object_id").is_null().sum().alias("unknown_channel_events"),
     ).collect().row(0, named=True)
 
-    state_pairs = (
+    state_variants = (
         pl.scan_csv(states, infer_schema=False)
         .select("sensor_type", "state_set_id", "state_name", "alarm_flag")
-        .select("sensor_type", pl.col("state_name").alias("raw_value"))
-        .unique()
+        .with_columns(pl.col("state_name").alias("raw_value"))
+        .group_by("sensor_type", "raw_value")
+        .agg(pl.struct("state_set_id", "alarm_flag").n_unique().alias("variants"))
     )
+    valid_state_pairs = state_variants.filter(pl.col("variants") == 1).select(
+        "sensor_type", "raw_value"
+    )
+    conflicting_state_pairs = state_variants.filter(pl.col("variants") > 1).select(
+        "sensor_type", "raw_value"
+    )
+    typed_events = joined.filter(pl.col("sensor_type").is_not_null())
     unmapped = (
-        joined.filter(pl.col("sensor_type").is_not_null())
-        .join(state_pairs, on=["sensor_type", "raw_value"], how="anti")
+        typed_events.join(valid_state_pairs, on=["sensor_type", "raw_value"], how="anti")
+        .group_by("sensor_type", "raw_value")
+        .len()
+        .collect()
+    )
+    conflicting = (
+        typed_events.join(
+            conflicting_state_pairs, on=["sensor_type", "raw_value"], how="inner"
+        )
         .group_by("sensor_type", "raw_value")
         .len()
         .collect()
@@ -87,8 +103,13 @@ def build_coverage_report(
         (sensor_type, raw_value): count
         for sensor_type, raw_value, count in unmapped.iter_rows()
     }
+    conflicts = {
+        (sensor_type, raw_value): count
+        for sensor_type, raw_value, count in conflicting.iter_rows()
+    }
     return CoverageReport(
         total_events=totals["total_events"],
         unknown_channel_events=totals["unknown_channel_events"],
         unmapped_type_value_pairs=pairs,
+        conflicting_type_value_pairs=conflicts,
     )
