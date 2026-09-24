@@ -1,3 +1,5 @@
+from itertools import pairwise
+
 import pytest
 
 from fire_risk.data.pickets import parse_picket
@@ -38,3 +40,11 @@ def test_sort_key_orders_by_picket_without_claiming_distance() -> None:
     assert keys[1] is not None
     assert keys[2] is not None
     assert keys[0] < keys[4] < keys[3] < keys[1] < keys[2]
+
+
+def test_suffix_sort_keys_are_distinct_monotonic_and_within_base_picket() -> None:
+    suffixes = [0, 1, 2, 10, 999, 1000]
+    keys = [parse_picket(f"ПК3+{suffix}").sort_key for suffix in suffixes]
+
+    assert all(key is not None and 3 < key < 4 for key in keys)
+    assert all(left < right for left, right in pairwise(keys))

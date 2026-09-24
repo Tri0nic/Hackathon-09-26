@@ -26,5 +26,6 @@ def parse_picket(name: str) -> ParsedPicket:
     # Suffixes order labels within a base picket; they are not distances.
     sort_key = float(base)
     if suffix is not None:
-        sort_key += int(suffix) / (10 ** (len(suffix) + 1))
+        value = int(suffix)
+        sort_key += (value + 1) / (value + 2)
     return ParsedPicket(raw=match.group(), sort_key=sort_key, location_group="picket")
