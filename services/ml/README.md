@@ -113,13 +113,17 @@ quality thresholds, and proxy rule version are recorded in the manifest.
   manifest.json
 ```
 
-The pipeline scans journals lazily, joins references, normalizes values and
+The pipeline streams a CSV structure preflight, retaining only malformed-record
+indices and reasons, then scans journals lazily, joins references, normalizes values and
 pickets, attaches deterministic device-age estimates, profiles quality, builds
 episodes/membership, emits proxy labels in batches, and attaches targets to
 feature snapshots. Parquet files are explicit output boundaries; subsequent
-stages rescan them. Only small references and aggregate JSON reports are eagerly
-read; no event journal is converted to a Python list. Proxy label records are
+stages rescan them. Only small references, malformed-record metadata and aggregate
+JSON reports are held eagerly; no event journal is converted to a Python list. Proxy label records are
 converted in batches of at most 10,000 episodes inside Polars output processing.
+Numeric methane readings at or above the configured threshold set the resolved
+`alarm_flag` consumed by episodes and proxy labels, even if the source flag was
+false. `source_alarm_flag` preserves the original journal value for audit.
 
 Source CSVs are never modified. Repeating a run ID replaces that run's generated
 files; choose a new ID to preserve an earlier build. Run IDs must be one
@@ -128,7 +132,11 @@ separators and colons are rejected. Existing case aliases, junctions or symlinks
 that resolve outside the output root or to another name are rejected before
 any output is written; exact same-ID reruns remain supported. The manifest records source
 filenames, absolute paths and byte sizes, a SHA-256 of canonical configuration,
-schema and Polars versions, UTC execution timestamps, and Parquet row counts.
+schema and Polars versions, implementation revision, UTC execution timestamps,
+and Parquet row counts. Revision uses `FIRE_RISK_IMPLEMENTATION_REVISION` when set,
+otherwise the local Git HEAD, or `unknown` outside an identifiable checkout.
+Its source is recorded separately; Git discovery reads neither network nor
+dirty-tree state, so the revision is not a fingerprint of uncommitted changes.
 Configuration sets are sorted before hashing. Determinism comparisons exclude
 only execution `started_at`/`completed_at`; tests compare Parquet values as well.
 Source sizes are provenance metadata, not cryptographic content hashes.
@@ -145,7 +153,8 @@ Missing numeric signals yield typed nulls, counts zero, and conjunctions false.
 Hour/month and ISO weekday (Monday = 1) are available at the scoring timestamp.
 
 The object baseline is mean daily activity over observed, eligible **completed**
-days. Current-day events and retrospectively known stuck intervals are excluded;
+days. Current-day events and retrospectively known stuck, historical-artifact or
+training-excluded intervals are excluded;
 days with no eligible observations do not enter its denominator. No eligible
 history gives null baseline/ratio. Activity ratio is 24h event count / baseline.
 Retrospective day quality flags stay in normalized data and reports for audit.
@@ -153,9 +162,9 @@ The public snapshot builder recomputes causal quality flags from raw event
 history, including when its input already carries retrospective or causal flags.
 A day is flagged only from the first event at which thresholds are crossed.
 Reduced inputs without `event_id`/`raw_value` cannot establish state histories,
-so unverified window quality flags default to zero. Existing stuck annotations
+so unverified window quality flags default to zero. Existing exclusion annotations
 on reduced inputs can exclude completed days from the baseline. The separate
-`baseline_stuck` marker is used only when its day is complete, never as a
+`baseline_excluded` marker is used only when its day is complete, never as a
 current-window feature. This prevents a later same-day burst from changing an
 earlier snapshot, whether the builder is called directly or through the CLI.
 
@@ -181,9 +190,14 @@ does not mark right-censored horizons after the journal's final observation.
 The broader duration, slope, entropy, inventory and freshness features listed
 in the design are not implemented in this foundation's minimum feature contract.
 
-Quality reports explicitly count malformed timestamps, unknown channels,
-conflicting mappings, and quarantined rows. Malformed timestamps are omitted
-from normalized output; original CSVs retain them. Historical 2021 artifacts
+Quality reports explicitly count malformed timestamps, other malformed input
+rows by reason, unknown channels, conflicting mappings, and quarantined rows.
+Missing required identifiers/date/time/alarm/value fields, invalid alarm flags,
+invalid timestamps and too few/extra CSV fields enter the bad LazyFrame with an
+explicit `quality_reason`, `source_file` and `source_row`. Row numbers count
+logical CSV records including the header, not physical lines inside quoted
+multiline values. Malformed rows are omitted from normalized output without
+discarding valid neighbors; original CSVs retain them. Historical 2021 artifacts
 remain normalized with exclusion flags and are omitted from proxy fire labels.
 Device ages are first-observation estimates or marked `generated_demo`/
 `is_synthetic`; they are not installation records.

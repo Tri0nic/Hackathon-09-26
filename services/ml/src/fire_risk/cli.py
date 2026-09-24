@@ -1,7 +1,9 @@
 """Reproducible, versioned preparation of source journals and training rows."""
 
 import json
+import os
 import re
+import subprocess
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
@@ -90,6 +92,43 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(_json(value) + "\n", encoding="utf-8")
 
 
+def _implementation_revision() -> dict[str, str]:
+    override = os.environ.get("FIRE_RISK_IMPLEMENTATION_REVISION", "").strip()
+    if override:
+        return {
+            "implementation_revision": override,
+            "implementation_revision_source": "environment",
+        }
+    repository = Path(__file__).resolve().parents[4]
+    if (repository / ".git").exists():
+        try:
+            revision = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    f"safe.directory={repository.as_posix()}",
+                    "rev-parse",
+                    "--verify",
+                    "HEAD",
+                ],
+                cwd=repository,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.strip()
+            return {
+                "implementation_revision": revision,
+                "implementation_revision_source": "git_head",
+            }
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return {
+        "implementation_revision": "unknown",
+        "implementation_revision_source": "unavailable",
+    }
+
+
 def _normalize_events(
     events: pl.LazyFrame, states: Path, config: PipelineConfig
 ) -> pl.LazyFrame:
@@ -125,7 +164,11 @@ def _normalize_events(
         )
         .unnest("_normalized")
         .with_columns(
-            pl.coalesce("_alarm", "alarm_flag").alias("alarm_flag"),
+            pl.col("alarm_flag").alias("source_alarm_flag"),
+            (
+                pl.coalesce("_alarm", "alarm_flag")
+                | pl.col("_value_flags").list.contains("methane_alarm")
+            ).alias("alarm_flag"),
             pl.concat_list("quality_flags", "_value_flags").alias("quality_flags"),
         )
         .drop("_alarm", "_value_flags")
@@ -274,7 +317,14 @@ def prepare(
         **{
             name: [
                 {"sensor_type": sensor, "raw_value": value, "event_count": count}
-                for (sensor, value), count in sorted(pairs.items())
+                for (sensor, value), count in sorted(
+                    pairs.items(),
+                    key=lambda item: (
+                        item[0][0] or "",
+                        item[0][1] is not None,
+                        item[0][1] or "",
+                    ),
+                )
             ]
             for name, pairs in [
                 ("unmapped_type_value_pairs", coverage.unmapped_type_value_pairs),
@@ -307,7 +357,14 @@ def prepare(
     attach_horizon_targets(
         build_feature_snapshots(normalized, settings), labels
     ).sink_parquet(directory / "feature_snapshots.parquet")
-    invalid = quarantined.select(pl.len()).collect(engine="streaming").item()
+    input_quality_reasons = {
+        reason: count
+        for reason, count in quarantined.group_by("quality_reason")
+        .len()
+        .collect(engine="streaming")
+        .iter_rows()
+    }
+    malformed = sum(input_quality_reasons.values())
     quality = (
         normalized.select(
             pl.len().alias("normalized_rows"),
@@ -324,8 +381,10 @@ def prepare(
     )
     quality.update(
         {
-            "invalid_timestamp_rows": invalid,
-            "quarantined_rows": invalid + quality["excluded_from_fire_training_rows"],
+            "invalid_timestamp_rows": input_quality_reasons.get("invalid_timestamp", 0),
+            "malformed_input_rows": malformed,
+            "input_quality_reasons": input_quality_reasons,
+            "quarantined_rows": malformed + quality["excluded_from_fire_training_rows"],
             "unknown_channel_events": coverage.unknown_channel_events,
             "conflicting_state_events": sum(
                 coverage.conflicting_type_value_pairs.values()
@@ -359,6 +418,7 @@ def prepare(
             "completed_at": datetime.now(UTC),
             "row_counts": row_counts,
             "polars_version": pl.__version__,
+            **_implementation_revision(),
         },
     )
     typer.echo(f"Prepared {directory}")

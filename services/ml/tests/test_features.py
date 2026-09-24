@@ -422,3 +422,27 @@ def test_ongoing_incidents_connect_later_contexts_even_when_end_column_is_all_nu
     result = attach_horizon_targets(snapshots, labels).collect()
     assert result["target_now"].to_list() == [True, True]
     assert result["episode_group_id"].to_list() == ["ongoing-a", "ongoing-a"]
+
+
+def test_completed_burst_only_historical_day_is_excluded_from_baseline() -> None:
+    source = events([-2880] + [-1440] * 100 + [0]).with_columns(
+        pl.Series("event_id", [f"{i:03}" for i in range(102)]),
+        pl.Series(
+            "raw_value", ["clean"] + [str(i % 2) for i in range(100)] + ["clean"]
+        ),
+        pl.lit("channel").alias("channel_id"),
+        pl.col("registered_at").dt.replace(year=2021),
+    )
+    thresholds = QualityThresholds()
+    marked = mark_historical_artifacts(source, profile_channel_days(source), thresholds)
+    bad_day = marked.filter(pl.col("registered_at").dt.day() == 2).collect()
+    assert bad_day["burst"].all()
+    assert not bad_day["stuck"].any()
+    assert bad_day["historical_artifact"].all()
+    scoring = datetime(2021, 1, 3, tzinfo=UTC)
+    result = (
+        build_feature_snapshots(marked, PipelineConfig())
+        .filter(pl.col("scoring_timestamp") == scoring)
+        .collect()
+    )
+    assert result["historical_daily_event_baseline"].item() == 1.0

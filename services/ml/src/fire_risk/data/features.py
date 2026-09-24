@@ -33,15 +33,26 @@ def _feature_events(events: pl.LazyFrame) -> pl.LazyFrame:
         expr.alias(name) for name, expr in optional.items() if name not in names
     )
     flags = ("stuck", "burst", "historical_artifact")
-    baseline_stuck = (
-        pl.col("baseline_stuck").fill_null(False)
-        if "baseline_stuck" in names
-        else pl.col("quality_flags").list.contains("stuck").fill_null(False)
-        | (pl.col("stuck").fill_null(False) if "stuck" in names else pl.lit(False))
-    )
+    baseline_excluded = pl.any_horizontal(
+        pl.col("quality_flags").list.contains("stuck"),
+        pl.col("quality_flags").list.contains("historical_artifact"),
+        *[
+            pl.col(name)
+            for name in (
+                "baseline_stuck",
+                "baseline_excluded",
+                "stuck",
+                "historical_artifact",
+                "exclude_from_fire_training",
+            )
+            if name in names
+        ],
+    ).fill_null(False)
     # Retrospective inputs are safe only for completed-day baseline exclusion.
     # Rebuild window flags at this public boundary, even for pre-profiled input.
-    events = events.with_columns(baseline_stuck.alias("baseline_stuck")).with_columns(
+    events = events.with_columns(
+        baseline_excluded.alias("baseline_excluded")
+    ).with_columns(
         pl.col("quality_flags")
         .list.eval(pl.element().filter(~pl.element().is_in(flags)))
         .alias("quality_flags")
@@ -58,6 +69,7 @@ def _feature_events(events: pl.LazyFrame) -> pl.LazyFrame:
             "numeric_value",
             "value_kind",
             "quality_flags",
+            "baseline_excluded",
         )
         thresholds = QualityThresholds()
         events = causal_quality_flags(
@@ -80,7 +92,7 @@ def _feature_events(events: pl.LazyFrame) -> pl.LazyFrame:
         "alarm_flag",
         pl.col("numeric_value").cast(pl.Float64),
         "value_kind",
-        pl.col("baseline_stuck").fill_null(False).alias("_baseline_stuck"),
+        pl.col("baseline_excluded").fill_null(False).alias("_baseline_excluded"),
         *[pl.col(flag).fill_null(False) for flag in flags],
         *[
             pl.col("sensor_type")
@@ -147,10 +159,11 @@ def build_feature_snapshots(
 
     Windows are (t - window, t]. Empty grid intervals have zero counts and
     null numeric summaries. Baselines average observed, eligible completed
-    days; stuck events are omitted. Weekday uses ISO numbering (Monday = 1).
+    days; stuck and historical/corrupted intervals are omitted. Weekday uses
+    ISO numbering (Monday = 1).
     Causal quality is rebuilt from raw event history at this boundary. Without
     raw values/event IDs, unverifiable technical flags default to zero; existing
-    stuck annotations can only exclude completed days from the baseline.
+    exclusion annotations can only exclude completed days from the baseline.
     No incident, label, or current whole-day profile enters a window feature.
     """
     if config.scoring_step_minutes <= 0:
@@ -198,7 +211,7 @@ def build_feature_snapshots(
         )
         result = result.join(rolled, on=_KEYS, how="left")
     daily = (
-        source.filter(~pl.col("_baseline_stuck"))
+        source.filter(~pl.col("_baseline_excluded"))
         .with_columns(pl.col("registered_at").dt.truncate("1d").alias("_day"))
         .group_by("object_id", "_day")
         .agg(pl.len().alias("_daily_count"))

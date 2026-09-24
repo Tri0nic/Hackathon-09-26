@@ -86,6 +86,17 @@ def test_prepare_writes_outputs_and_reproducible_manifest_without_mutating_sourc
     assert hashes == [sha256(path.read_bytes()).hexdigest() for path in sources]
 
 
+def test_manifest_records_explicit_implementation_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FIRE_RISK_IMPLEMENTATION_REVISION", "build-final-validation")
+    result = RUNNER.invoke(app, prepare_args(tmp_path))
+    assert result.exit_code == 0, result.output + str(result.exception)
+    manifest = json.loads((tmp_path / "test-run" / "manifest.json").read_text())
+    assert manifest["implementation_revision"] == "build-final-validation"
+    assert manifest["implementation_revision_source"] == "environment"
+
+
 def test_cli_wires_normalization_episodes_proxy_targets_and_quality(
     tmp_path: Path,
 ) -> None:
@@ -153,6 +164,89 @@ def test_run_id_cannot_escape_output_directory(tmp_path: Path) -> None:
     result = RUNNER.invoke(app, args)
     assert result.exit_code != 0
     assert not (tmp_path.parent / "escaped").exists()
+
+
+@pytest.mark.parametrize(
+    ("threshold", "gas_alarm", "label_count"), [(1.0, True, 1), (1.5, False, 0)]
+)
+def test_methane_threshold_participates_in_episode_alarm_composition_and_proxy_labels(
+    tmp_path: Path,
+    threshold: float,
+    gas_alarm: bool,
+    label_count: int,
+) -> None:
+    source = tmp_path / "gas.csv"
+    source.write_text(
+        "ид_события,ид_канала_данных,дата,время,тревожное,значение_датчика\n"
+        "1,001,2024-01-03,00:00:00,t,Обнаружен дым\n"
+        "2,002,2024-01-03,00:01:00,f,1.20\n"
+        "3,003,2024-01-03,00:02:00,t,Пуск\n"
+        "4,002,2024-01-03,00:03:00,f,0.75\n",
+        encoding="utf-8",
+    )
+    base = pl.read_csv(FIXTURES / "channels.csv", infer_schema=False).head(1)
+    channels = tmp_path / "channels.csv"
+    pl.concat(
+        [
+            base.with_columns(
+                pl.lit(channel).alias("channel_id"), pl.lit(sensor).alias("sensor_type")
+            )
+            for channel, sensor in [
+                ("001", "Датчик дыма"),
+                ("002", "Газовый датчик"),
+                ("003", "Насос"),
+            ]
+        ]
+    ).write_csv(channels)
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps({"methane_alarm_percent": threshold}), encoding="utf-8"
+    )
+    result = RUNNER.invoke(
+        app,
+        prepare_args(tmp_path / "out", source, channels) + ["--config", str(config)],
+    )
+    assert result.exit_code == 0, result.output + str(result.exception)
+    directory = tmp_path / "out" / "test-run"
+    normalized = pl.read_parquet(directory / "normalized_events.parquet")
+    assert normalized["alarm_flag"].to_list() == [True, gas_alarm, True, False]
+    assert normalized["source_alarm_flag"].to_list() == [True, False, True, False]
+    episodes = pl.read_parquet(directory / "episodes.parquet")
+    assert (
+        "Газовый датчик" in episodes["alarming_sensor_types"].item().to_list()
+    ) is gas_alarm
+    labels = pl.read_parquet(directory / "incident_labels.parquet")
+    assert labels.height == label_count
+    if label_count:
+        assert labels["source"].item() == "proxy"
+
+
+def test_cli_reports_malformed_required_values_and_ragged_rows(tmp_path: Path) -> None:
+    source = tmp_path / "malformed.csv"
+    source.write_text(
+        "ид_события,ид_канала_данных,дата,время,тревожное,значение_датчика\n"
+        "1,001,2024-01-03,00:00:00,f,unmapped\n"
+        "2,001,2024-01-03,00:01:00,f,\n"
+        "3,001,2024-01-03,00:02:00,f\n"
+        "4,001,2024-01-03,00:03:00,f,20,extra\n"
+        "5,001,2024-01-03,00:04:00,f,Норма\n",
+        encoding="utf-8",
+    )
+    result = RUNNER.invoke(app, prepare_args(tmp_path / "out", source))
+    assert result.exit_code == 0, result.output + str(result.exception)
+    directory = tmp_path / "out" / "test-run"
+    assert pl.read_parquet(directory / "normalized_events.parquet")[
+        "event_id"
+    ].to_list() == ["1", "5"]
+    quality = json.loads((directory / "quality_report.json").read_text())
+    assert quality["quarantined_rows"] == 3
+    assert quality["invalid_timestamp_rows"] == 0
+    assert quality["malformed_input_rows"] == 3
+    assert quality["input_quality_reasons"] == {
+        "missing_raw_value": 1,
+        "too_few_fields": 1,
+        "extra_fields": 1,
+    }
 
 
 def test_future_burst_does_not_retroactively_change_training_features(

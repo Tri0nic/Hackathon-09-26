@@ -65,9 +65,7 @@ def test_coverage_report_counts_unknown_channels_and_unmapped_pairs() -> None:
 
     assert report.total_events == 3
     assert report.unknown_channel_events == 1
-    assert report.unmapped_type_value_pairs == {
-        ("Датчик дыма", "Обнаружен дым"): 1
-    }
+    assert report.unmapped_type_value_pairs == {("Датчик дыма", "Обнаружен дым"): 1}
 
 
 def test_conflicting_state_rows_are_reported_and_not_counted_as_covered(
@@ -86,3 +84,13 @@ def test_conflicting_state_rows_are_reported_and_not_counted_as_covered(
         ("Датчик дыма", "Обнаружен дым"): 1,
         ("Датчик дыма", "Норма"): 1,
     }
+
+
+def test_coverage_handles_entirely_null_optional_values() -> None:
+    source = events_fixture().with_columns(pl.lit(None).alias("raw_value"))
+    report = build_coverage_report(
+        source, FIXTURES / "channels.csv", FIXTURES / "states.csv"
+    )
+    assert report.total_events == 3
+    assert report.unknown_channel_events == 1
+    assert report.unmapped_type_value_pairs == {("Датчик дыма", None): 2}

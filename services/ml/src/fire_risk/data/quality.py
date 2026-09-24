@@ -113,14 +113,26 @@ def causal_quality_flags(
     Consumes the profiled normalized table. The historical median refers only
     to completed preceding days; all current-day statistics use prefixes.
     Rows remain flagged from the first detected anomaly through that day.
-    Retain retrospective stuck as baseline_stuck, usable only once that day
-    is complete; it must never enter current-day/window features.
+    Retain retrospective exclusions as baseline_excluded, usable only once
+    that day is complete; they must never enter current-day/window features.
     """
     flags = ("burst", "stuck", "historical_artifact")
     original = events.collect_schema().names()
     keys = ["channel_id", "_causal_day"]
     ordered = events.with_columns(
         pl.col("stuck").alias("baseline_stuck"),
+        (
+            pl.col("stuck")
+            | pl.col("historical_artifact")
+            | pl.col("exclude_from_fire_training")
+            | (
+                pl.col("baseline_excluded")
+                if "baseline_excluded" in original
+                else pl.lit(False)
+            )
+        )
+        .fill_null(False)
+        .alias("baseline_excluded"),
         pl.col("registered_at").dt.date().alias("_causal_day"),
         pl.col("registered_at").dt.truncate("1s").alias("_causal_second"),
     ).sort([*keys, "registered_at", "event_id"])
@@ -183,4 +195,11 @@ def causal_quality_flags(
             .otherwise(pl.col("quality_flags"))
             .alias("quality_flags")
         )
-    return result.select(*original, "baseline_stuck")
+    return result.select(
+        *original,
+        *[
+            name
+            for name in ("baseline_stuck", "baseline_excluded")
+            if name not in original
+        ],
+    )
