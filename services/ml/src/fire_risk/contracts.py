@@ -105,3 +105,6 @@ class PipelineConfig(BaseModel):
     scoring_step_minutes: int = 15
     episode_gap_minutes: int = 30
     methane_alarm_percent: float = 1.0
+    sensor_sentinels: dict[str, set[str]] = Field(
+        default_factory=lambda: {"Датчик температуры": {"-100"}}
+    )
