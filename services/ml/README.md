@@ -12,6 +12,11 @@ python -m ruff check src tests
 python -m mypy src
 ```
 
+On Windows, installation includes the `tzdata` runtime dependency so Python's
+`ZoneInfo` can resolve `Europe/Moscow` even without a system IANA timezone
+database. Re-run the editable installation command when updating an existing
+environment to pick up dependency changes.
+
 The implementation worktree also supports its existing Conda-style environment:
 use `..\..\.venv\python.exe` in place of `python` from `services/ml`.
 
