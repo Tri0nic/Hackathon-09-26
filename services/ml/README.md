@@ -17,60 +17,35 @@ use `..\..\.venv\python.exe` in place of `python` from `services/ml`.
 
 ## Fixture build and reproducibility
 
-```powershell
-python -m fire_risk.cli prepare --events tests/fixtures/events.csv --channels tests/fixtures/channels.csv --states tests/fixtures/states.csv --output .artifacts --run-id smoke-test
-```
+Run `python -m pytest tests/test_pipeline.py tests/test_cli.py -v` for fixture
+builds with explicit provider coverage. Tests execute the CLI twice and compare
+Parquet SHA-256 values and JSON content, excluding only execution `started_at`
+and `completed_at`. No stage-duration fields are currently emitted. The pipeline
+tests also force a complete rebuild with `resume=False` and verify the same
+non-clock artifacts, interruption recovery, tamper detection and source integrity.
 
-The checked-in event fixture deliberately contains channel IDs absent from the
-reference fixture. It produces two normalized rows and two membership rows,
-zero episodes/labels/snapshots, and explicitly reports two unknown-channel
-events. `tests/test_cli.py` also prepares a temporary fixture with known smoke
-and heat channels, a proxy fire episode, conflicting states, and a malformed
-timestamp, verifying nonempty features and targets through the same command.
-
-To repeat the fixture build and compare provenance and source integrity:
+For a previously calibrated fixture, use:
 
 ```powershell
-$fixtureFiles = @('tests/fixtures/events.csv', 'tests/fixtures/channels.csv', 'tests/fixtures/states.csv')
-$beforeHashes = $fixtureFiles | Get-FileHash -Algorithm SHA256 | Select-Object Path, Hash | ConvertTo-Json
-python -m fire_risk.cli prepare --events tests/fixtures/events.csv --channels tests/fixtures/channels.csv --states tests/fixtures/states.csv --output .artifacts --run-id smoke-test
-$firstManifest = Get-Content .artifacts/smoke-test/manifest.json -Raw | ConvertFrom-Json
-python -m fire_risk.cli prepare --events tests/fixtures/events.csv --channels tests/fixtures/channels.csv --states tests/fixtures/states.csv --output .artifacts --run-id smoke-test
-$secondManifest = Get-Content .artifacts/smoke-test/manifest.json -Raw | ConvertFrom-Json
-$firstManifest.PSObject.Properties.Remove('started_at')
-$firstManifest.PSObject.Properties.Remove('completed_at')
-$secondManifest.PSObject.Properties.Remove('started_at')
-$secondManifest.PSObject.Properties.Remove('completed_at')
-if (($firstManifest | ConvertTo-Json -Depth 20) -ne ($secondManifest | ConvertTo-Json -Depth 20)) { throw 'Manifest mismatch' }
-$afterHashes = $fixtureFiles | Get-FileHash -Algorithm SHA256 | Select-Object Path, Hash | ConvertTo-Json
-if ($beforeHashes -ne $afterHashes) { throw 'Source CSV changed' }
+python -m fire_risk.cli prepare --events tests/fixtures/events.csv --channels tests/fixtures/channels.csv --states tests/fixtures/states.csv --quality-thresholds D:/fire-risk/.artifacts/fixture-thresholds.json --label-observed-until 2026-12-31T00:00:00+03:00 --source-timezone Europe/Moscow --temp-dir D:/fire-risk/.artifacts/temp --output D:/fire-risk/.artifacts --run-id smoke-test
 ```
 
-## Full journal build
+The threshold file must be a validated artifact created by
+`calibrate_thresholds` / `write_calibration`, or stage 20 of an earlier full run.
+A supplied `--quality-thresholds` file is loaded without refitting.
 
-The supplied `dataset/справочник_каналов_датчиков.csv` is **not** an enriched
-channel reference: its five Russian columns do not contain the required object
-mapping or hierarchy. A canonical state reference is also not supplied in the
-current dataset. Before a full build, obtain authoritative channel-to-object
-mapping and state definitions and export UTF-8 CSVs to
-`data/references/channels.csv` and `data/references/states.csv`. Do not infer or
-invent those mappings from engineering tags. Preserve the original CSVs.
+## Full 2019–2026 two-pass build
 
-`channels.csv` must contain the fields below, with one row per channel and IDs
-stored as strings (including leading zeros):
+Pass all eight immutable journals and both authoritative external references.
+The adapters accept the exact Russian schemas directly; no manual renaming is
+needed. Same-alarm state mappings with several state-set IDs remain known;
+only true/false disagreement is a conflict.
 
-```text
-channel_id,engineering_system_type,sensor_type,sensor_name,object_id,object_level,object_name,level2_object_id,level2_object_name,level1_object_id,level1_object_name
-```
-
-`states.csv` requires `sensor_type,state_set_id,state_name,alarm_flag`. Distinct
-variants for the same type/value are reported as conflicts. Numeric values can
-appear in the report of pairs absent from the state reference; numeric parsing
-has precedence during normalization.
-
-From the main repository's `services/ml`, after supplying those references:
+From the main repository's `services/ml` directory, execute in PowerShell:
 
 ```powershell
+# Set this to the provider-confirmed coverage end; do not infer it from events.
+$labelCoverageEnd = 'REPLACE_WITH_CONFIRMED_ISO_8601_TIMESTAMP_WITH_TIMEZONE'
 python -m fire_risk.cli prepare `
   --events ../../dataset/ext-journal-2019.csv `
   --events ../../dataset/ext-journal-2020.csv `
@@ -80,71 +55,109 @@ python -m fire_risk.cli prepare `
   --events ../../dataset/ext-journal-2024.csv `
   --events ../../dataset/ext-journal-2025.csv `
   --events ../../dataset/ext-journal-2026.csv `
-  --channels ../../data/references/channels.csv `
-  --states ../../data/references/states.csv `
-  --source-timezone UTC --device-as-of 2026-09-24 --device-seed 0 `
-  --output .artifacts --run-id full-2019-2026-v1
+  --channels 'C:\Users\Андрей\Downloads\Telegram Desktop\справочник_каналов_датчиков_расширенный.csv' `
+  --states 'C:\Users\Андрей\Downloads\Telegram Desktop\справочник_состояний.csv' `
+  --source-timezone Europe/Moscow --device-as-of 2026-09-24 --device-seed 42 `
+  --label-observed-until $labelCoverageEnd --calibrate --resume `
+  --output D:/fire-risk/.artifacts --temp-dir D:/fire-risk/.artifacts/temp `
+  --run-id full-2019-2026-v2
 ```
 
-`--source-timezone UTC` is an explicit assumption, not established source
-provenance. Set it to the source owner's documented IANA timezone, for example
-`Europe/Moscow`, before a production build. Output timestamps, calendar features,
-and day boundaries are UTC. The full dataset was not executed in fixture
-validation. Sorting, grouped rolling windows and joins require working memory;
-lazy execution does not promise constant memory on the multiyear dataset.
+In an isolated worktree, supply absolute journal paths to the main repository's
+`dataset` directory. Production output **and** temporary/spill directories must
+be explicit paths on `D:`; reference files remain read-only at their original
+locations. Never commit thresholds, reports, intermediate data, temp files or
+other generated artifacts. Keep production runs under an ignored `.artifacts`
+directory or outside the checkout.
 
-## Configuration, outputs, and interpretation
+`--calibrate` and `--quality-thresholds` are mutually exclusive. Calibration
+requires an explicit `--temp-dir` and journal filenames containing their
+2019–2026 source year. Pass 1 profiles train journals (2019–2024) only and saves
+typed, versioned train-only thresholds. No static threshold decides which 2021
+intervals enter calibration. In the absence of pre-established exclusion
+annotations, all parser-valid 2021 intervals remain admissible; the report
+states that pre-calibration exclusions are zero. Parser-invalid rows never enter
+profiles. Pass 2 reloads the frozen artifact and applies it unchanged to all
+years, including 2025 validation and 2026 test.
 
-`--config path/to/config.json` accepts `PipelineConfig` fields, including
-`scoring_step_minutes` (default 15), `episode_gap_minutes` (30),
-`methane_alarm_percent` (1.0), and per-sensor `sensor_sentinels`. Omitted fields
-retain defaults. Configuration, timezone, deterministic device-age seed/as-of,
-quality thresholds, and proxy rule version are recorded in the manifest.
+`Europe/Moscow` is the default, configurable timezone assumption and part of
+identity/provenance. Source timestamps are localized there. Business-day quality
+profiles, historical baselines and calendar features use that timezone; persisted
+event, episode and scoring timestamps are UTC. Coverage is always explicit:
+`--label-observed-until` requires an offset-aware timestamp.
+
+## Configuration, stages, and resumption
+
+`--config path/to/config.json` accepts `PipelineConfig` fields:
+`scoring_step_minutes` (15), `episode_gap_minutes` (30),
+`methane_alarm_percent` (1.0), and per-sensor `sensor_sentinels`.
 
 ```text
-.artifacts/<run-id>/
-  normalized_events.parquet
-  episodes.parquet
-  episode_membership.parquet
-  incident_labels.parquet
-  feature_snapshots.parquet
-  coverage.json
-  quality_report.json
+<output>/<run-id>/
+  00-source-inventory.json
+  10-channel-day-profiles.parquet
+  20-calibrated-thresholds.json
+  30-normalized-events.parquet
+  31-object-inventory.parquet
+  32-object-inventory-by-type.parquet
+  40-episodes.parquet
+  41-episode-membership.parquet
+  50-incident-labels.parquet
+  60-feature-snapshots.parquet
+  70-coverage.json
+  71-quality-report.json
+  72-run-report.json
   manifest.json
 ```
 
-The pipeline sanitizes CSV records one at a time into process-owned OS temporary
-files, then scans those files lazily, joins references, normalizes values and
-pickets, attaches deterministic device-age estimates, profiles quality, builds
-episodes/membership, emits proxy labels in batches, and attaches targets to
-feature snapshots. Parquet files are explicit output boundaries; subsequent
-stages rescan them. Sanitation retains one bounded CSV record, with no collection
-growing with the number of valid or malformed rows. Temporary backing remains
-available for repeated or derived LazyFrame collections until normal process
-exit, when the entire temporary directory is removed. Disk space scales with
-input size; abrupt process termination can leave temporary files for OS cleanup.
-Only small references and aggregate JSON reports are held eagerly; no event journal
-is converted to a Python list. Proxy label records are
-converted in batches of at most 10,000 episodes inside Polars output processing.
-Numeric methane readings at or above the configured threshold set the resolved
-`alarm_flag` consumed by episodes and proxy labels, even if the source flag was
-false. `source_alarm_flag` preserves the original journal value for audit.
+Every stage has a `<filename>.complete.json` containing its name, input identity,
+output SHA-256, schema version and non-clock statistics. Reuse requires both a
+matching identity and verified content hash. Missing/invalid markers or changed
+stage inputs rebuild that stage and every successor. For example, changing the
+episode gap reuses the source inventory, channel-day profiles, thresholds,
+normalized events and object inventory. `--no-resume` rebuilds all stages.
+Never run concurrent writers against the same run directory.
 
-Source CSVs are never modified. Repeating a run ID replaces that run's generated
-files; choose a new ID to preserve an earlier build. Run IDs must be one
-Windows-safe component: trailing dots/spaces, device names (including extensions),
-separators and colons are rejected. Existing case aliases, junctions or symlinks
-that resolve outside the output root or to another name are rejected before
-any output is written; exact same-ID reruns remain supported. The manifest records source
-filenames, absolute paths and byte sizes, a SHA-256 of canonical configuration,
-schema and Polars versions, implementation revision, UTC execution timestamps,
-and Parquet row counts. Revision uses `FIRE_RISK_IMPLEMENTATION_REVISION` when set,
-otherwise the local Git HEAD, or `unknown` outside an identifiable checkout.
-Its source is recorded separately; Git discovery reads neither network nor
-dirty-tree state, so the revision is not a fingerprint of uncommitted changes.
-Configuration sets are sorted before hashing. Determinism comparisons exclude
-only execution `started_at`/`completed_at`; tests compare Parquet values as well.
-Source sizes are provenance metadata, not cryptographic content hashes.
+Each write uses a temporary sibling, closes/fsyncs it, atomically replaces the
+output, then atomically publishes its completion record. An interrupted writer
+does not delete the prior artifact; an incomplete output has no valid completion
+marker. The pipeline hashes every source before reading and after execution and
+refuses to complete the manifest if any hash changes. The run identity includes
+source hashes, canonical configuration, timezone, seed, schema/Polars version and
+implementation revision. Revision uses `FIRE_RISK_IMPLEMENTATION_REVISION` if
+set, otherwise local Git HEAD; run committed code or supply an explicit build
+revision when testing uncommitted changes.
+
+Legacy names (`normalized_events.parquet`, `inventory_totals.parquet`,
+`inventory_by_type.parquet`, `episodes.parquet`, `episode_membership.parquet`,
+`incident_labels.parquet`, `feature_snapshots.parquet`, `coverage.json`,
+`quality_report.json`, `run_report.json`) are published atomically as aliases.
+They use same-volume hard links where available, avoiding another copy of large
+Parquet outputs. Stage names and their completion markers are authoritative.
+
+CSV sanitation uses bounded record buffers and caller-owned temporary spools
+under `--temp-dir`; they are removed when the run exits normally or raises.
+Polars spill is directed to the same root with `POLARS_TEMP_DIR`. Abrupt process
+termination may leave temp files, so provision space on `D:`. Sorting, rolling
+windows and joins still require memory; lazy execution does not guarantee
+constant memory. No whole journal or full label table is converted to a Python
+list. Small references and grouped report aggregates are collected eagerly.
+
+Run IDs are single Windows-safe components. Reserved device names, trailing
+dots/spaces, separators, colons, case aliases and junction/symlink aliases to
+other directories are rejected before output writes.
+
+`run_report.json` includes accepted/quarantined rows by source year, object
+coverage, unknown states/conflicts, excluded 2021 intervals and reasons, frozen
+threshold provenance, proxy counts by year/object/rule/sorted sensor combination,
+class balance and available/censored/positive/negative counts for every horizon,
+feature/rule input overlap, and source hashes/seed/timezone/revision. Proxy metrics
+measure reproduction of reconstructed labels, **not detection quality for
+confirmed real fires**.
+
+Numeric methane readings at or above the configured threshold set the resolved
+`alarm_flag` consumed by episodes and proxy labels; `source_alarm_flag` preserves
+the original journal flag.
 
 Feature rows are exactly `object_id × scoring_timestamp`, from the floor of the
 first known event to the ceiling of the last event for each object. Unknown
@@ -191,9 +204,10 @@ just because an earlier incident is active at one scoring time. Disconnected
 contexts keep separate IDs; grouping is independent of input order and snapshot
 selection. A snapshot with no active/future match gets null. Temporal split and
 embargo policy remains the training stage's responsibility. This stage
-does not mark right-censored horizons after the journal's final observation.
-The broader duration, slope, entropy, inventory and freshness features listed
-in the design are not implemented in this foundation's minimum feature contract.
+marks each target unavailable when its horizon extends beyond the provider's
+explicit observation boundary. Censored targets are null, never false. Duration,
+slope, window-local variability/entropy, authoritative inventory and 24-hour
+freshness features are included and causal.
 
 Quality reports explicitly count malformed timestamps, other malformed input
 rows by reason, unknown channels, conflicting mappings, and quarantined rows.

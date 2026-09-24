@@ -120,7 +120,7 @@ def _spool_directory() -> Path:
     return Path(directory.name)
 
 
-def _sanitize_csv(path: Path) -> Path:
+def _sanitize_csv(path: Path, temp_dir: Path | None = None) -> Path:
     """Write one row at a time; no collection grows with good or bad row count."""
     with path.open(encoding="utf-8-sig", newline="") as handle:
         record = _read_record(handle)
@@ -137,7 +137,7 @@ def _sanitize_csv(path: Path) -> Path:
             encoding="utf-8",
             newline="",
             suffix=".csv",
-            dir=_spool_directory(),
+            dir=temp_dir if temp_dir is not None else _spool_directory(),
             delete=False,
         ) as output:
             spool = Path(output.name)
@@ -171,9 +171,9 @@ def _sanitize_csv(path: Path) -> Path:
     return spool
 
 
-def _scan_annotated(path: Path) -> pl.LazyFrame:
+def _scan_annotated(path: Path, temp_dir: Path | None = None) -> pl.LazyFrame:
     source = pl.scan_csv(
-        _sanitize_csv(path),
+        _sanitize_csv(path, temp_dir),
         encoding="utf8",
         infer_schema=False,
         schema_overrides={"_source_index": pl.UInt64},
@@ -216,16 +216,19 @@ def scan_events(paths: list[Path]) -> pl.LazyFrame:
     )
 
 
-def partition_events(paths: list[Path]) -> tuple[pl.LazyFrame, pl.LazyFrame]:
+def partition_events(
+    paths: list[Path], *, temp_dir: Path | None = None
+) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """Return valid rows and explicit row-level quarantine with source identity.
 
-    Streaming sanitation uses a bounded record buffer and process-owned OS-temp
-    files, removed at normal exit. Field validation and both partitions are lazy.
+    Streaming sanitation uses a bounded record buffer. An explicit temp_dir is
+    caller-owned; otherwise process-owned spools are removed at normal exit.
+    Field validation and both partitions are lazy.
     source_row counts logical CSV records including the header, not physical
     lines when quoted values span lines. On quote/size errors, recovery treats
     the first physical line as the malformed record and retries its neighbors.
     """
-    events = pl.concat([_scan_annotated(path) for path in paths])
+    events = pl.concat([_scan_annotated(path, temp_dir) for path in paths])
     valid = events.filter(pl.col("quality_reason").is_null()).drop("quality_reason")
     bad = events.filter(pl.col("quality_reason").is_not_null())
     return valid, bad

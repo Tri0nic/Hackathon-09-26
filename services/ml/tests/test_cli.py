@@ -97,6 +97,44 @@ def test_prepare_requires_frozen_quality_thresholds(tmp_path: Path) -> None:
     assert "quality-thresholds" in result.output
 
 
+def test_prepare_calibrates_then_resumes_with_explicit_temp_directory(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "ext-journal-2024.csv"
+    source.write_text(
+        "ид_события,ид_канала_данных,дата,время,тревожное,значение_датчика\n"
+        "1,001,2024-01-03,00:00:00,f,Норма\n",
+        encoding="utf-8",
+    )
+    args = prepare_args(tmp_path / "out", source)
+    offset = args.index("--quality-thresholds")
+    del args[offset : offset + 2]
+    args += ["--calibrate", "--temp-dir", str(tmp_path / "temp"), "--resume"]
+    result = RUNNER.invoke(app, args)
+    assert result.exit_code == 0, result.output + str(result.exception)
+    directory = tmp_path / "out" / "test-run"
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["configuration"]["source_timezone"] == "Europe/Moscow"
+    assert manifest["configuration"]["quality_calibration"]["seed"] == 0
+    assert (
+        pl.read_parquet(directory / "30-normalized-events.parquet")["registered_at"][
+            0
+        ].hour
+        == 21
+    )
+    hashes = {
+        path.name: sha256(path.read_bytes()).hexdigest()
+        for path in directory.glob("*.parquet")
+    }
+    result = RUNNER.invoke(app, args)
+    assert result.exit_code == 0, result.output + str(result.exception)
+    assert "Reused 14" in result.output
+    assert hashes == {
+        path.name: sha256(path.read_bytes()).hexdigest()
+        for path in directory.glob("*.parquet")
+    }
+
+
 def test_prepare_requires_explicit_label_observation_boundary(tmp_path: Path) -> None:
     args = prepare_args(tmp_path)
     del args[-2:]
