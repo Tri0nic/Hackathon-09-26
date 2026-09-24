@@ -99,6 +99,7 @@ class IncidentLabel(BaseModel):
     confirmed_at: datetime | None = None
     source: LabelSource
     confidence: float = Field(ge=0.0, le=1.0)
+    rule_version: str | None = None
 
 
 class PipelineConfig(BaseModel):
