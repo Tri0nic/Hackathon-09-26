@@ -6,6 +6,7 @@ import sys
 import tracemalloc
 from hashlib import file_digest
 from pathlib import Path
+from time import perf_counter
 
 import polars as pl
 import pytest
@@ -223,6 +224,20 @@ def test_oversized_crlf_record_keeps_one_quarantine_identity(tmp_path: Path) -> 
     assert valid.collect()["source_row"].to_list() == [3]
 
 
+def test_unquoted_field_over_csv_limit_is_quarantined(tmp_path: Path) -> None:
+    source = tmp_path / "oversized-field.csv"
+    source.write_text(
+        HEADER
+        + "large,001,2024-01-03,00:00:00,f,"
+        + "x" * 140_000
+        + "\nneighbor,001,2024-01-03,00:01:00,f,20\n",
+        encoding="utf-8",
+    )
+    valid, bad = partition_events([source])
+    assert valid.collect()["event_id"].to_list() == ["neighbor"]
+    assert bad.collect()["quality_reason"].to_list() == ["record_too_large"]
+
+
 def test_lazy_temp_backing_survives_collection_and_is_removed_at_process_exit(
     tmp_path: Path,
 ) -> None:
@@ -265,3 +280,31 @@ print(json.dumps([str(path) for path in Path(sys.argv[2]).rglob('*') if path.is_
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout), "Expected disk backing while LazyFrames are alive"
     assert list(spool_parent.iterdir()) == []
+
+
+@pytest.mark.skipif(
+    os.environ.get("FIRE_RISK_RUN_CSV_BENCHMARK") != "1",
+    reason="Opt-in production-host throughput acceptance benchmark",
+)
+def test_large_valid_journal_sanitation_exceeds_ten_megabytes_per_second(
+    tmp_path: Path,
+) -> None:
+    """Catch per-record UTF-8 position reconstruction on real Russian CSV data."""
+    source = tmp_path / "representative-valid.csv"
+    count = 500_000
+    block = "1409185555,213358,2019-02-11,09:58:46,f,Норма\r\n" * 1_000
+    with source.open("w", encoding="utf-8-sig", newline="") as handle:
+        handle.write(HEADER)
+        for _ in range(count // 1_000):
+            handle.write(block)
+    started = perf_counter()
+    valid, bad = partition_events([source], temp_dir=tmp_path)
+    elapsed = perf_counter() - started
+    throughput = source.stat().st_size / elapsed / 1_000_000
+    assert valid.select(pl.len()).collect().item() == count
+    assert bad.select(pl.len()).collect().item() == 0
+    assert valid.select(pl.col("raw_value").unique()).collect().item() == "Норма"
+    assert valid.select(pl.col("source_row").min()).collect().item() == 2
+    assert valid.select(pl.col("source_row").max()).collect().item() == 500_001
+    print(f"CSV sanitation: {throughput:.2f} MB/s in {elapsed:.3f}s")
+    assert throughput >= 10.0, f"CSV sanitation only {throughput:.2f} MB/s"

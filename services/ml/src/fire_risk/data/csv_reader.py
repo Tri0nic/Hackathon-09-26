@@ -36,15 +36,19 @@ class _RecordTooLarge(Exception):
 class _RecordLines(Iterator[str]):
     """Bound one csv.reader call and remember where recovery should resume."""
 
-    def __init__(self, handle: TextIO) -> None:
+    def __init__(self, handle: TextIO, first_line: str | None = None) -> None:
         self.handle = handle
+        self.pending_line = first_line
         self.first_line: str | None = None
-        self.next_record_position = 0
+        self.next_record_position: int | None = None
         self.consumed = 0
         self.quote_state = "start"
 
     def __next__(self) -> str:
-        line = self.handle.readline(_MAX_RECORD_CHARS - self.consumed + 1)
+        if self.pending_line is None:
+            line = self.handle.readline(_MAX_RECORD_CHARS - self.consumed + 1)
+        else:
+            line, self.pending_line = self.pending_line, None
         if not line:
             raise StopIteration
         first = self.first_line is None
@@ -60,13 +64,13 @@ class _RecordLines(Iterator[str]):
                 position = self.handle.tell()
                 if self.handle.read(1) != "\n":
                     self.handle.seek(position)
-            if first:
-                self.next_record_position = self.handle.tell()
             raise _RecordTooLarge
-        if first:
-            self.next_record_position = self.handle.tell()
         # csv.reader(strict=True) permits quotes inside unquoted fields. RFC4180
         # does not, so validate quote boundaries as well as its parser errors.
+        # Most journal records contain no quotes. Neither Python character
+        # iteration nor a TextIOWrapper.tell() decoder replay is needed there.
+        if '"' not in line:
+            return line
         for char in line:
             if self.quote_state == "quoted":
                 if char == '"':
@@ -86,11 +90,18 @@ class _RecordLines(Iterator[str]):
                 self.quote_state = "start"
             else:
                 self.quote_state = "unquoted"
+        if first and self.quote_state == "quoted":
+            # Only a multiline record can consume a neighboring physical line
+            # before failing. Save its recovery cookie once; a single-line
+            # failure already leaves the handle at the next record.
+            self.next_record_position = self.handle.tell()
         return line
 
 
-def _read_record(handle: TextIO) -> tuple[list[str], str | None] | None:
-    lines = _RecordLines(handle)
+def _read_record(
+    handle: TextIO, first_line: str | None = None
+) -> tuple[list[str], str | None] | None:
+    lines = _RecordLines(handle, first_line)
     try:
         row = next(csv.reader(lines, strict=True), None)
         return None if row is None else (row, None)
@@ -103,7 +114,8 @@ def _read_record(handle: TextIO) -> tuple[list[str], str | None] | None:
         # An unfinished quote may have consumed neighboring physical lines.
         # Retry from the first line after the malformed record, preserving valid
         # multiline records whenever strict parsing succeeds.
-        handle.seek(lines.next_record_position)
+        if lines.next_record_position is not None:
+            handle.seek(lines.next_record_position)
         try:
             row = next(csv.reader([lines.first_line or ""]), [])
         except csv.Error:
@@ -132,6 +144,9 @@ def _sanitize_csv(path: Path, temp_dir: Path | None = None) -> Path:
         ):
             raise ValueError(f"{path}: missing, duplicate or malformed CSV columns")
         positions = [header.index(field) for field in _REQUIRED_FIELDS]
+        canonical_order = header == list(_REQUIRED_FIELDS)
+        fast_line_limit = min(_MAX_RECORD_CHARS, csv.field_size_limit())
+        delimiters = len(_REQUIRED_FIELDS) - 1
         with NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
@@ -144,8 +159,25 @@ def _sanitize_csv(path: Path, temp_dir: Path | None = None) -> Path:
             try:
                 writer = csv.writer(output)
                 writer.writerow([*_REQUIRED_FIELDS, "_shape_reason", "_source_index"])
+                write = output.file.write
                 index = 0
-                while (record := _read_record(handle)) is not None:
+                while line := handle.readline(_MAX_RECORD_CHARS + 1):
+                    # An unquoted, correctly shaped physical line is already
+                    # valid CSV in the output column order. Preserve its fields
+                    # verbatim and add only provenance; field validation still
+                    # occurs in _scan_annotated. All other records use the same
+                    # bounded strict parser and recovery path below.
+                    if (
+                        canonical_order
+                        and len(line) <= fast_line_limit
+                        and '"' not in line
+                        and line.count(",") == delimiters
+                    ):
+                        write(line.rstrip("\r\n") + f",,{index}\r\n")
+                        index += 1
+                        continue
+                    record = _read_record(handle, line)
+                    assert record is not None
                     row, reason = record
                     if reason is None and len(row) != len(header):
                         reason = (
