@@ -1,13 +1,19 @@
 """Historical-only feature windows and independently attached incident targets."""
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
 from fire_risk.config import PipelineConfig
-from fire_risk.data.features import attach_horizon_targets, build_feature_snapshots
+from fire_risk.data import features as feature_module
+from fire_risk.data.features import (
+    _duration_features,
+    attach_horizon_targets,
+    build_feature_snapshots,
+)
 from fire_risk.data.quality import (
     QualityThresholds,
     causal_quality_flags,
@@ -52,6 +58,230 @@ def state_events(
         pl.Series("channel_id", channels),
         pl.Series("raw_value", values),
         pl.Series("value_kind", kinds),
+    )
+
+
+def test_duration_intermediates_do_not_expand_snapshots_by_channels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = state_events(
+        [-2000] * 64 + [-10, -10, 0],
+        [f"ch-{i}" for i in range(64)] + ["ch-0"] * 3,
+        ["normal"] * 63 + ["broken", "broken", "alarm", "alarm"],
+        ["known_state"] * 63
+        + ["malfunction", "malfunction", "known_state", "known_state"],
+    )
+    grid = pl.DataFrame(
+        {
+            "object_id": ["mine"] * 96,
+            "registered_at": [START + timedelta(minutes=15 * i) for i in range(96)],
+        }
+    ).lazy()
+    # Measure real intermediate joins, not plan/source text or elapsed time.
+    # The former implementation produces 64 * 96 = 6144 joined rows here.
+    observed_rows: list[int] = []
+    point_rows: list[int] = []
+    original_concat = pl.concat
+
+    def instrument_concat(*args, **kwargs):
+        combined = original_concat(*args, **kwargs)
+
+        def record_points(frame: pl.DataFrame) -> pl.DataFrame:
+            point_rows.append(frame.height)
+            return frame
+
+        return combined.map_batches(
+            record_points,
+            schema=combined.collect_schema(),
+            predicate_pushdown=False,
+            projection_pushdown=False,
+            slice_pushdown=False,
+        )
+
+    monkeypatch.setattr(pl, "concat", instrument_concat)
+    for method in ["join", "join_asof"]:
+        original = getattr(pl.LazyFrame, method)
+
+        def instrument_join(self, *args, _original=original, **kwargs):
+            joined = _original(self, *args, **kwargs)
+
+            def record_rows(frame: pl.DataFrame) -> pl.DataFrame:
+                observed_rows.append(frame.height)
+                return frame
+
+            return joined.map_batches(
+                record_rows,
+                schema=joined.collect_schema(),
+                predicate_pushdown=False,
+                projection_pushdown=False,
+                slice_pushdown=False,
+            )
+
+        monkeypatch.setattr(pl.LazyFrame, method, instrument_join)
+    result = (
+        _duration_features(source.reverse(), grid).sort("scoring_timestamp").collect()
+    )
+    assert max(observed_rows, default=0) <= 67 + 96
+    assert point_rows
+    assert max(point_rows) <= 3 * 67 + 96
+    assert result.height == 96
+    first = result.row(0, named=True)
+    assert first["active_state_duration_seconds_30m"] == 114000
+    assert first["max_active_state_duration_seconds_30m"] == 1800
+    assert first["malfunction_duration_seconds_30m"] == 1800
+    assert first["max_malfunction_duration_seconds_30m"] == 1800
+    assert result["active_state_duration_seconds_30m"].tail(1).item() == 115200
+    future = state_events(
+        [5, 5],
+        ["ch-0", "future"],
+        ["normal", "broken"],
+        ["known_state", "malfunction"],
+    ).with_columns(pl.Series("event_id", ["future-a", "future-b"]))
+    after = _duration_features(pl.concat([source, future]), grid).collect()
+    assert_frame_equal(
+        result.filter(pl.col("scoring_timestamp") == START),
+        after.filter(pl.col("scoring_timestamp") == START),
+    )
+
+
+def test_duration_execution_partitions_objects_and_retains_old_state_carry_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = state_events(
+        [-2000, -10, 0],
+        ["a", "a", "b"],
+        ["normal", "broken", "normal"],
+        ["known_state", "malfunction", "known_state"],
+    )
+    source = pl.concat([first, first.with_columns(pl.lit("other").alias("object_id"))])
+    grid = pl.DataFrame(
+        {
+            "object_id": ["mine", "mine", "other", "other"],
+            "registered_at": [START, START + timedelta(minutes=15)] * 2,
+        }
+    ).lazy()
+    observed_partitions: list[tuple[int, int]] = []
+    for name in ["_duration_totals", "_oldest_state_age"]:
+        original = getattr(feature_module, name)
+
+        def instrument_partition(runs, *args, _original=original, **kwargs):
+            def record_partition(frame: pl.DataFrame) -> pl.DataFrame:
+                observed_partitions.append(
+                    (frame.height, frame["object_id"].n_unique())
+                )
+                return frame
+
+            bounded = runs.map_batches(
+                record_partition,
+                schema=runs.collect_schema(),
+                predicate_pushdown=False,
+                projection_pushdown=False,
+                slice_pushdown=False,
+            )
+            return _original(bounded, *args, **kwargs)
+
+        monkeypatch.setattr(feature_module, name, instrument_partition)
+    result = (
+        _duration_features(source, grid)
+        .sort("object_id", "scoring_timestamp")
+        .collect(engine="streaming")
+    )
+    assert observed_partitions
+    assert max(objects for _, objects in observed_partitions) == 1
+    assert max(rows for rows, _ in observed_partitions) <= 3
+    assert result["active_state_duration_seconds_30m"].to_list() == [600, 2400] * 2
+    assert result["malfunction_duration_seconds_30m"].to_list() == [600, 1500] * 2
+    assert result["max_active_state_duration_seconds_30m"].to_list() == [600, 1500] * 2
+    assert result["active_state_duration_seconds_5m"].to_list() == [300, 600] * 2
+
+
+def test_duration_change_points_carry_across_files_and_replace_oldest_states(
+    tmp_path: Path,
+) -> None:
+    source = state_events(
+        [-60, -40, -30, -15, -5, 0, 10, 20],
+        ["a", "b", "c", "a", "b", "c", "a", "c"],
+        [
+            "normal",
+            "broken",
+            "normal",
+            "broken",
+            "normal",
+            "broken",
+            "normal",
+            "normal",
+        ],
+        [
+            "known_state",
+            "malfunction",
+            "known_state",
+            "malfunction",
+            "known_state",
+            "malfunction",
+            "known_state",
+            "known_state",
+        ],
+    ).collect()
+    paths = [tmp_path / f"part-{i}.parquet" for i in range(3)]
+    for path, part in zip(paths, [source[:3], source[3:6], source[6:]], strict=True):
+        part.write_parquet(path, row_group_size=1)
+    grid = pl.DataFrame(
+        {
+            "object_id": ["mine"] * 5,
+            "registered_at": [
+                START + timedelta(minutes=m) for m in [-30, -15, 0, 15, 30]
+            ],
+        }
+    ).lazy()
+    result = (
+        _duration_features(pl.scan_parquet(paths), grid)
+        .sort("scoring_timestamp")
+        .collect(engine="streaming")
+    )
+    assert result["active_state_duration_seconds_30m"].to_list() == [
+        2400,
+        2400,
+        1200,
+        2400,
+        3600,
+    ]
+    assert result["max_active_state_duration_seconds_30m"].to_list() == [
+        1800,
+        1500,
+        900,
+        1200,
+        1800,
+    ]
+    assert result["malfunction_duration_seconds_30m"].to_list() == [
+        600,
+        1500,
+        900,
+        900,
+        0,
+    ]
+    assert result["max_malfunction_duration_seconds_30m"].to_list() == [
+        600,
+        1500,
+        900,
+        900,
+        0,
+    ]
+    assert result["active_state_duration_seconds_5m"].to_list() == [
+        600,
+        600,
+        600,
+        900,
+        900,
+    ]
+    assert result["active_state_duration_seconds_24h"].tail(1).item() == 3900
+    future = state_events([35], ["a"], ["broken"], ["malfunction"]).with_columns(
+        pl.lit("future").alias("event_id")
+    )
+    assert_frame_equal(
+        result,
+        _duration_features(pl.concat([source.lazy(), future]), grid)
+        .sort("scoring_timestamp")
+        .collect(engine="streaming"),
     )
 
 

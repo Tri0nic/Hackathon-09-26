@@ -115,64 +115,220 @@ def _feature_events(events: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
-def _duration_features(source: pl.LazyFrame, grid: pl.LazyFrame) -> pl.LazyFrame:
-    """Carry each channel's current raw state, including normal states, to t.
-
-    Repeated observations retain the run start. Channels without a raw state
-    observed by t contribute zero; only current malfunction states contribute
-    to malfunction durations.
-    """
-    channel_keys = ["object_id", "channel_id"]
-    states = (
-        source.filter(pl.col("raw_value").is_not_null())
-        .sort([*channel_keys, "registered_at", "event_id"])
-        .with_columns(
-            pl.when(
-                pl.col("raw_value").ne_missing(
-                    pl.col("raw_value").shift().over(channel_keys)
-                )
-            )
-            .then(pl.col("registered_at"))
-            .alias("_changed_at")
-        )
-        .with_columns(pl.col("_changed_at").forward_fill().over(channel_keys))
-        .select(*channel_keys, "registered_at", "_changed_at", "value_kind")
-    )
-    channel_grid = grid.join(
-        source.select(channel_keys).unique(), on="object_id", how="left"
-    ).sort([*channel_keys, "registered_at"])
-    durations = channel_grid.join_asof(
-        states,
-        on="registered_at",
-        by=channel_keys,
-        strategy="backward",
-        check_sortedness=False,
+def _duration_totals(
+    runs: pl.LazyFrame, grid: pl.LazyFrame, window: str, seconds: int
+) -> pl.LazyFrame:
+    """Integrate clipped duration ramps using at most three points per run."""
+    limit = seconds * 1_000_000
+    cap = pl.col("_start") + limit
+    age = pl.col("_end") - pl.col("_start")
+    common = ["object_id", "_broken"]
+    points = pl.concat(
+        [
+            runs.select(
+                *common,
+                pl.col("_start").alias("_time"),
+                pl.lit(1, dtype=pl.Int64).alias("_slope"),
+                pl.lit(0, dtype=pl.Int64).alias("_jump"),
+            ),
+            runs.filter(pl.col("_end").is_null() | (cap <= pl.col("_end"))).select(
+                *common,
+                cap.alias("_time"),
+                pl.lit(-1, dtype=pl.Int64).alias("_slope"),
+                pl.lit(0, dtype=pl.Int64).alias("_jump"),
+            ),
+            runs.filter(pl.col("_end").is_not_null()).select(
+                *common,
+                pl.col("_end").alias("_time"),
+                -(age < limit).cast(pl.Int64).alias("_slope"),
+                -age.clip(upper_bound=limit).alias("_jump"),
+            ),
+        ]
     ).with_columns(
-        (
-            (pl.col("registered_at") - pl.col("_changed_at")).dt.total_microseconds()
-            / 1_000_000
-        )
-        .fill_null(0.0)
-        .alias("_duration")
+        (pl.col("_slope") * pl.col("_broken")).alias("_mal_slope"),
+        (pl.col("_jump") * pl.col("_broken")).alias("_mal_jump"),
     )
-    expressions = []
-    for window, seconds in zip(_WINDOWS, _WINDOW_SECONDS, strict=True):
-        active = pl.col("_duration").clip(upper_bound=seconds)
-        malfunction = (
-            pl.when(pl.col("value_kind") == "malfunction").then(active).otherwise(0.0)
+    markers = grid.with_columns(pl.lit(True).alias("_snapshot"))
+    timeline = (
+        pl.concat([points, markers], how="diagonal")
+        .group_by("object_id", "_time")
+        .agg(
+            pl.col("_snapshot").any(),
+            *[
+                pl.col(name).sum()
+                for name in ("_slope", "_jump", "_mal_slope", "_mal_jump")
+            ],
         )
-        expressions.extend(
-            [
-                active.sum().alias(f"active_state_duration_seconds_{window}"),
-                active.max().alias(f"max_active_state_duration_seconds_{window}"),
-                malfunction.sum().alias(f"malfunction_duration_seconds_{window}"),
-                malfunction.max().alias(f"max_malfunction_duration_seconds_{window}"),
-            ]
+        .sort(["object_id", "_time"])
+        .with_columns(
+            pl.col("_slope").cum_sum(),
+            pl.col("_mal_slope").cum_sum(),
+            pl.col("_time").diff().fill_null(0).alias("_elapsed"),
+        )
+        .with_columns(
+            (
+                pl.col("_elapsed") * pl.col("_slope").shift().fill_null(0)
+                + pl.col("_jump")
+            ).alias("_active_increment"),
+            (
+                pl.col("_elapsed") * pl.col("_mal_slope").shift().fill_null(0)
+                + pl.col("_mal_jump")
+            ).alias("_mal_increment"),
+        )
+        .with_columns(
+            pl.col("_active_increment")
+            .cum_sum()
+            .alias(f"active_state_duration_seconds_{window}"),
+            pl.col("_mal_increment")
+            .cum_sum()
+            .alias(f"malfunction_duration_seconds_{window}"),
+        )
+    )
+    return timeline.filter(pl.col("_snapshot")).select(
+        "object_id",
+        "_time",
+        pl.col(f"active_state_duration_seconds_{window}") / 1_000_000,
+        pl.col(f"malfunction_duration_seconds_{window}") / 1_000_000,
+    )
+
+
+def _oldest_state_age(
+    runs: pl.LazyFrame, grid: pl.LazyFrame, name: str
+) -> pl.LazyFrame:
+    """Build the disjoint envelope of oldest active runs, then look up snapshots."""
+    envelope = (
+        runs.with_columns(pl.col("_end").fill_null(2**63 - 1))
+        .sort(["object_id", "_start", "_end"])
+        .with_columns(pl.col("_end").cum_max().alias("_covered_until"))
+        .with_columns(
+            pl.max_horizontal("_start", pl.col("_covered_until").shift()).alias(
+                "_segment_start"
+            )
+        )
+        .filter(pl.col("_end") > pl.col("_segment_start"))
+        .select("object_id", "_segment_start", "_start", "_end")
+        .sort(["object_id", "_segment_start"])
+    )
+    return (
+        grid.sort(["object_id", "_time"])
+        .join_asof(
+            envelope,
+            left_on="_time",
+            right_on="_segment_start",
+            by="object_id",
+            strategy="backward",
+            check_sortedness=False,
+        )
+        .select(
+            "object_id",
+            "_time",
+            pl.when(pl.col("_time") < pl.col("_end"))
+            .then(pl.col("_time") - pl.col("_start"))
+            .otherwise(0)
+            .alias(name),
+        )
+    )
+
+
+def _duration_features(source: pl.LazyFrame, grid: pl.LazyFrame) -> pl.LazyFrame:
+    """Execute one complete object history per duration partition, sequentially.
+
+    Only distinct object IDs are collected here. Every in-memory window fallback
+    receives a single object's filtered events; no partition shares channel
+    state. Peak duration intermediate size is at most 3 * events_for_object +
+    snapshots_for_object per window, independent of other objects' histories.
+    """
+    object_ids = (
+        source.select("object_id")
+        .unique()
+        .sort("object_id")
+        .collect(engine="streaming")
+        .get_column("object_id")
+        .to_list()
+    )
+    if not object_ids:
+        return _duration_partition(source, grid)
+    return pl.concat(
+        [
+            _duration_partition(
+                source.filter(pl.col("object_id") == object_id),
+                grid.filter(pl.col("object_id") == object_id),
+            )
+            for object_id in object_ids
+        ],
+        parallel=False,
+    )
+
+
+def _duration_partition(source: pl.LazyFrame, grid: pl.LazyFrame) -> pl.LazyFrame:
+    """Aggregate one object's run change points with O(events + snapshots) rows.
+
+    Ends only cancel a run's contribution at that later transition. Appending a
+    future transition cannot alter any earlier change point or snapshot value.
+    No Python callback or channel-by-snapshot product is used. Grouped windows
+    that fall back from streaming remain bounded by this object partition.
+    """
+    source = source.select(
+        "object_id",
+        "channel_id",
+        "registered_at",
+        "event_id",
+        "raw_value",
+        "value_kind",
+    ).cache()
+    grid = grid.cache()
+    channel_keys = ["object_id", "channel_id"]
+    runs = (
+        source.filter(
+            pl.col("raw_value").is_not_null() & pl.col("channel_id").is_not_null()
+        )
+        .sort([*channel_keys, "registered_at", "event_id"])
+        .filter(
+            pl.col("raw_value").ne_missing(
+                pl.col("raw_value").shift().over(channel_keys)
+            )
+        )
+        .select(
+            *channel_keys,
+            pl.col("registered_at").dt.epoch("us").alias("_start"),
+            (pl.col("value_kind") == "malfunction")
+            .fill_null(False)
+            .cast(pl.Int64)
+            .alias("_broken"),
+        )
+        .with_columns(pl.col("_start").shift(-1).over(channel_keys).alias("_end"))
+        .filter(pl.col("_end").is_null() | (pl.col("_end") > pl.col("_start")))
+        .cache()
+    )
+    grid_us = grid.select(
+        "object_id", pl.col("registered_at").dt.epoch("us").alias("_time")
+    )
+    keys = ["object_id", "_time"]
+    result = _oldest_state_age(runs, grid_us, "_active_age").join(
+        _oldest_state_age(runs.filter(pl.col("_broken") == 1), grid_us, "_mal_age"),
+        on=keys,
+        how="left",
+    )
+    for window, seconds in zip(_WINDOWS, _WINDOW_SECONDS, strict=True):
+        result = result.join(
+            _duration_totals(runs, grid_us, window, seconds), on=keys, how="left"
+        )
+        result = result.with_columns(
+            (
+                pl.col("_active_age").clip(upper_bound=seconds * 1_000_000) / 1_000_000
+            ).alias(f"max_active_state_duration_seconds_{window}"),
+            (
+                pl.col("_mal_age").clip(upper_bound=seconds * 1_000_000) / 1_000_000
+            ).alias(f"max_malfunction_duration_seconds_{window}"),
         )
     return (
-        durations.group_by("object_id", "registered_at")
-        .agg(expressions)
-        .rename({"registered_at": "scoring_timestamp"})
+        result.drop("_active_age", "_mal_age")
+        .rename({"_time": "scoring_timestamp"})
+        .with_columns(
+            pl.col("scoring_timestamp")
+            .cast(pl.Datetime("us", "UTC"))
+            .cast(grid.collect_schema()["registered_at"])
+        )
     )
 
 
