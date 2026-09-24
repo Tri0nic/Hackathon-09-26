@@ -67,3 +67,37 @@ def test_very_long_suffix_keeps_raw_without_integer_conversion() -> None:
     assert result.raw == raw
     assert result.sort_key is None
     assert result.location_group == "unlocated"
+
+
+def test_adjacent_suffixes_remain_ordered_at_maximum_base() -> None:
+    names = [
+        "ПК999999+0",
+        "ПК999999-1",
+        "ПК999999–999998",
+        "ПК999999+999999",
+    ]
+    keys = [parse_picket(name).sort_key for name in names]
+
+    assert all(key is not None and 999_999 < key < 1_000_000 for key in keys)
+    assert all(left < right for left, right in pairwise(keys))
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["ПК1000000", "ПК 1000000", "ПК1000000+1", "ПК1000000-1", "ПК1000000–1"],
+)
+def test_oversized_base_keeps_raw_but_is_unlocated(raw: str) -> None:
+    result = parse_picket(f"Датчик {raw}")
+
+    assert result.raw == raw
+    assert result.sort_key is None
+    assert result.location_group == "unlocated"
+
+
+def test_very_long_base_keeps_raw_without_integer_conversion() -> None:
+    raw = "ПК" + "9" * 5000
+    result = parse_picket(raw)
+
+    assert result.raw == raw
+    assert result.sort_key is None
+    assert result.location_group == "unlocated"

@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
+MAX_PICKET_BASE: Final[int] = 999_999
 MAX_SORTABLE_PICKET_SUFFIX: Final[int] = 999_999
 
 _PICKET = re.compile(
@@ -25,6 +26,13 @@ def parse_picket(name: str) -> ParsedPicket:
         return ParsedPicket(raw=None, sort_key=None, location_group="unlocated")
 
     raw = match.group()
+    base_digits = match.group("base").lstrip("0") or "0"
+    if len(base_digits) > len(str(MAX_PICKET_BASE)):
+        return ParsedPicket(raw=raw, sort_key=None, location_group="unlocated")
+    base = int(base_digits)
+    if base > MAX_PICKET_BASE:
+        return ParsedPicket(raw=raw, sort_key=None, location_group="unlocated")
+
     suffix = match.group("suffix")
     value: int | None = None
     if suffix is not None:
@@ -35,7 +43,6 @@ def parse_picket(name: str) -> ParsedPicket:
         if value > MAX_SORTABLE_PICKET_SUFFIX:
             return ParsedPicket(raw=raw, sort_key=None, location_group="unlocated")
 
-    base = int(match.group("base"))
     # Suffixes order labels within a base picket; they are not distances.
     sort_key = float(base)
     if value is not None:
