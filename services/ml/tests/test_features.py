@@ -12,7 +12,6 @@ from fire_risk.data import features as feature_module
 from fire_risk.data.features import (
     _duration_features,
     attach_horizon_targets,
-    build_feature_snapshots,
 )
 from fire_risk.data.quality import (
     QualityThresholds,
@@ -23,6 +22,36 @@ from fire_risk.data.quality import (
 
 START = datetime(2024, 1, 3, tzinfo=UTC)
 OBSERVED_UNTIL = START + timedelta(days=100)
+
+
+def build_feature_snapshots(
+    source: pl.LazyFrame, config: PipelineConfig, inventory: pl.LazyFrame | None = None
+) -> pl.LazyFrame:
+    """Existing behavioral fixtures explicitly choose their legacy cutoffs."""
+    return feature_module.build_feature_snapshots(
+        source, config, inventory, thresholds=QualityThresholds()
+    )
+
+
+def test_feature_builder_requires_explicit_quality_thresholds() -> None:
+    with pytest.raises(TypeError, match="thresholds"):
+        feature_module.build_feature_snapshots(events([0]), PipelineConfig())  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("year", [2025, 2026])
+def test_feature_builder_uses_supplied_thresholds_on_validation_test(year: int) -> None:
+    source = events([0, 0, 0]).with_columns(
+        pl.lit(datetime(year, 1, 3, tzinfo=UTC)).alias("registered_at"),
+        pl.lit("one-channel").alias("channel_id"),
+        pl.Series("event_id", ["1", "2", "3"]),
+        pl.lit("same").alias("raw_value"),
+    )
+    frozen = QualityThresholds(2, 2, 2.0, 2)
+    result = feature_module.build_feature_snapshots(
+        source, PipelineConfig(), thresholds=frozen
+    ).collect()
+    assert result["stuck_count_5m"].item() == 2
+    assert result["burst_count_5m"].item() == 2
 
 
 def events(minutes: list[int]) -> pl.LazyFrame:

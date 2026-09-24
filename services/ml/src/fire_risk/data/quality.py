@@ -1,6 +1,8 @@
 """Lazy channel-day profiles and targeted historical anomaly quarantine."""
 
 from dataclasses import dataclass
+from math import isfinite
+from typing import ClassVar
 
 import polars as pl
 
@@ -14,10 +16,29 @@ class QualityThresholds:
     max_event_rate_deviation: float = 10.0
     min_stuck_run: int = 100
 
+    MIN_COUNT: ClassVar[int] = 2
+    MIN_RATE_DEVIATION: ClassVar[float] = 2.0
+
+    def __post_init__(self) -> None:
+        for name in ("min_burst_events", "max_repeats_per_second", "min_stuck_run"):
+            value = getattr(self, name)
+            if type(value) is not int or value < self.MIN_COUNT:
+                raise ValueError(f"{name} must be an integer >= {self.MIN_COUNT}")
+        rate = self.max_event_rate_deviation
+        if (
+            type(rate) not in (int, float)
+            or not isfinite(rate)
+            or rate < self.MIN_RATE_DEVIATION
+        ):
+            raise ValueError("max_event_rate_deviation must be finite and >= 2.0")
+        object.__setattr__(self, "max_event_rate_deviation", float(rate))
+
 
 def profile_channel_days(events: pl.LazyFrame) -> pl.LazyFrame:
     """Summarize each channel/day against its preceding channel-day history."""
     keys = ["channel_id", "day"]
+    if "source_year" in events.collect_schema().names():
+        keys.append("source_year")
     dated = events.with_columns(pl.col("registered_at").dt.date().alias("day"))
     counts = dated.group_by(keys).agg(
         pl.len().alias("event_count"),
@@ -71,6 +92,11 @@ def mark_historical_artifacts(
 ) -> pl.LazyFrame:
     """Attach per-event channel-day flags, quarantining anomalous 2021 intervals."""
     keys = ["channel_id", "day"]
+    if (
+        "source_year" in events.collect_schema().names()
+        and "source_year" in profiles.collect_schema().names()
+    ):
+        keys.append("source_year")
     joined = events.with_columns(pl.col("registered_at").dt.date().alias("day")).join(
         profiles, on=keys, how="left"
     )

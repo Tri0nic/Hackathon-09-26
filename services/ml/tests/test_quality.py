@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 
 import polars as pl
+import pytest
 
 from fire_risk.data.quality import (
     QualityThresholds,
@@ -35,6 +36,28 @@ def _thresholds() -> QualityThresholds:
         max_event_rate_deviation=3.0,
         min_stuck_run=4,
     )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("min_burst_events", 1),
+        ("min_stuck_run", 0),
+        ("max_repeats_per_second", 1.5),
+        ("min_burst_events", True),
+        ("max_event_rate_deviation", float("nan")),
+        ("max_event_rate_deviation", float("inf")),
+        ("max_event_rate_deviation", 1.0),
+    ],
+)
+def test_threshold_schema_rejects_unsafe_values(field: str, value: object) -> None:
+    with pytest.raises(ValueError):
+        QualityThresholds(**{field: value})  # type: ignore[arg-type]
+
+
+def test_profile_preserves_source_year_for_calibration() -> None:
+    source = _events([("a", "A", _dt(2024, 6, 1), False, "normal")])
+    assert profile_channel_days(source).collect()["source_year"].to_list() == [2024]
 
 
 def test_anomalous_day_does_not_exclude_entire_2021_or_other_channel() -> None:

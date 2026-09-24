@@ -15,6 +15,7 @@ import typer
 
 from fire_risk.config import PipelineConfig
 from fire_risk.contracts import ChannelReference, IncidentEpisode
+from fire_risk.data.calibration import read_calibration
 from fire_risk.data.csv_reader import partition_events
 from fire_risk.data.device_metadata import DeviceAgeConfig, estimate_device_metadata
 from fire_risk.data.episodes import build_episodes
@@ -28,7 +29,6 @@ from fire_risk.data.labels import (
 from fire_risk.data.normalize import normalize_value
 from fire_risk.data.pickets import parse_picket
 from fire_risk.data.quality import (
-    QualityThresholds,
     mark_historical_artifacts,
     profile_channel_days,
 )
@@ -265,6 +265,12 @@ def prepare(
     label_observed_until: Annotated[
         str, typer.Option(help="Confirmed label coverage end (ISO-8601 with timezone).")
     ],
+    quality_thresholds: Annotated[
+        Path,
+        typer.Option(
+            exists=True, dir_okay=False, help="Frozen train-calibrated JSON thresholds."
+        ),
+    ],
     config: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
     source_timezone: Annotated[
         str, typer.Option(help="Timezone of naive source timestamps.")
@@ -311,13 +317,15 @@ def prepare(
             "scoring step must be positive and episode gap non-negative"
         )
     age_config = DeviceAgeConfig(as_of=date.fromisoformat(device_as_of))
-    thresholds = QualityThresholds()
+    calibration = read_calibration(quality_thresholds)
+    thresholds = calibration.thresholds
     effective_config = {
         "pipeline": settings.model_dump(),
         "source_timezone": source_timezone,
         "device_metadata": asdict(age_config),
         "device_seed": device_seed,
         "quality_thresholds": asdict(thresholds),
+        "quality_calibration": asdict(calibration),
         "proxy_rule_version": PROXY_RULE_VERSION,
         "label_observed_until": observed_until.isoformat(),
     }
@@ -389,7 +397,9 @@ def prepare(
     inventory_totals.sink_parquet(directory / "inventory_totals.parquet")
     inventory_by_type.sink_parquet(directory / "inventory_by_type.parquet")
     attach_horizon_targets(
-        build_feature_snapshots(normalized, settings, inventory), labels, observed_until
+        build_feature_snapshots(normalized, settings, inventory, thresholds=thresholds),
+        labels,
+        observed_until,
     ).sink_parquet(directory / "feature_snapshots.parquet")
     input_quality_reasons = {
         reason: count

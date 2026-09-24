@@ -22,7 +22,9 @@ _WINDOW_SECONDS = (300, 1800, 10800, 21600, 86400)
 _KEYS = ["object_id", "scoring_timestamp"]
 
 
-def _feature_events(events: pl.LazyFrame) -> pl.LazyFrame:
+def _feature_events(
+    events: pl.LazyFrame, thresholds: QualityThresholds
+) -> pl.LazyFrame:
     names = events.collect_schema().names()
     optional = {
         "event_id": pl.lit(None, dtype=pl.String),
@@ -73,7 +75,6 @@ def _feature_events(events: pl.LazyFrame) -> pl.LazyFrame:
             "quality_flags",
             "baseline_excluded",
         )
-        thresholds = QualityThresholds()
         events = causal_quality_flags(
             mark_historical_artifacts(
                 history, profile_channel_days(history), thresholds
@@ -531,7 +532,11 @@ def _freshness_features(
 
 
 def build_feature_snapshots(
-    events: pl.LazyFrame, config: PipelineConfig, inventory: pl.LazyFrame | None = None
+    events: pl.LazyFrame,
+    config: PipelineConfig,
+    inventory: pl.LazyFrame | None = None,
+    *,
+    thresholds: QualityThresholds,
 ) -> pl.LazyFrame:
     """Build a per-object grid from floor(first event) to ceil(last event).
 
@@ -551,7 +556,7 @@ def build_feature_snapshots(
     """
     if config.scoring_step_minutes <= 0:
         raise ValueError("scoring_step_minutes must be positive")
-    source = _feature_events(events)
+    source = _feature_events(events, thresholds)
     step = f"{config.scoring_step_minutes}m"
     bounds = (
         source.group_by("object_id")

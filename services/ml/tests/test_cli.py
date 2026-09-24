@@ -32,6 +32,30 @@ def prepare_args(
     channels: Path = FIXTURES / "channels.csv",
     states: Path = FIXTURES / "states.csv",
 ) -> list[str]:
+    from datetime import date
+
+    from fire_risk.data.calibration import calibrate_thresholds, write_calibration
+
+    # Keep legacy quality behavior, but supply an explicit train-only artifact.
+    frozen_path = output.parent / "fixture-thresholds.json"
+    write_calibration(
+        frozen_path,
+        calibrate_thresholds(
+            pl.DataFrame(
+                {
+                    "source_year": [2024],
+                    "day": [date(2024, 1, 1)],
+                    "event_count": [100],
+                    "max_repeats_per_second": [25],
+                    "longest_identical_state_run": [100],
+                    "event_rate_deviation": [10.0],
+                }
+            ),
+            {"fixture-train": "a" * 64},
+            seed=42,
+            implementation_revision="fixture-revision",
+        ),
+    )
     return [
         "prepare",
         "--events",
@@ -44,9 +68,33 @@ def prepare_args(
         str(output),
         "--run-id",
         "test-run",
+        "--quality-thresholds",
+        str(frozen_path),
         "--label-observed-until",
         "2026-12-31T00:00:00+00:00",
     ]
+
+
+def test_prepare_requires_frozen_quality_thresholds(tmp_path: Path) -> None:
+    # No fixture creation needed to prove the public option is mandatory.
+    args = [
+        "prepare",
+        "--events",
+        str(FIXTURES / "events.csv"),
+        "--channels",
+        str(FIXTURES / "channels.csv"),
+        "--states",
+        str(FIXTURES / "states.csv"),
+        "--output",
+        str(tmp_path),
+        "--run-id",
+        "test-run",
+        "--label-observed-until",
+        "2026-12-31T00:00:00+00:00",
+    ]
+    result = RUNNER.invoke(app, args)
+    assert result.exit_code == 2
+    assert "quality-thresholds" in result.output
 
 
 def test_prepare_requires_explicit_label_observation_boundary(tmp_path: Path) -> None:
@@ -64,6 +112,10 @@ def test_prepare_records_label_observation_boundary(tmp_path: Path) -> None:
     assert (
         manifest["configuration"]["label_observed_until"] == "2026-12-31T00:00:00+00:00"
     )
+    frozen = manifest["configuration"]["quality_calibration"]
+    assert frozen["implementation_revision"] == "fixture-revision"
+    assert frozen["source_sha256"] == {"fixture-train": "a" * 64}
+    assert frozen["thresholds"] == manifest["configuration"]["quality_thresholds"]
 
 
 def test_prepare_writes_outputs_and_reproducible_manifest_without_mutating_sources(
