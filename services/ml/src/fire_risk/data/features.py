@@ -1,5 +1,7 @@
 """Lazy, history-only object snapshots; incident targets attach separately."""
 
+from datetime import datetime
+
 import polars as pl
 
 from fire_risk.config import PipelineConfig
@@ -253,7 +255,7 @@ def build_feature_snapshots(
 
 
 def attach_horizon_targets(
-    snapshots: pl.LazyFrame, incidents: pl.LazyFrame
+    snapshots: pl.LazyFrame, incidents: pl.LazyFrame, observed_until: datetime
 ) -> pl.LazyFrame:
     """Attach active [start, end) and cumulative future (t, t+h] targets.
 
@@ -269,6 +271,8 @@ def attach_horizon_targets(
     names the component, independent of input order and selected snapshots.
     """
     names = incidents.collect_schema().names()
+    if observed_until.tzinfo is None or observed_until.utcoffset() is None:
+        raise ValueError("observed_until must be timezone-aware")
     if "decision" in names:
         positive = pl.col("decision") == "confirmed_fire"
         if "source" in names:
@@ -390,13 +394,33 @@ def attach_horizon_targets(
         )
         .join(active, on=_KEYS, how="left")
         .with_columns(
-            pl.col("_active_id").is_not_null().alias("target_now"),
             *[
                 (
-                    pl.col("started_at")
-                    <= pl.col("scoring_timestamp") + pl.duration(hours=hours)
+                    pl.col("scoring_timestamp") + pl.duration(hours=hours)
+                    <= pl.lit(observed_until)
                 )
                 .fill_null(False)
+                .alias(f"target_{hours}h_available")
+                for hours in (6, 12, 24)
+            ],
+            (pl.col("scoring_timestamp") <= pl.lit(observed_until))
+            .fill_null(False)
+            .alias("target_now_available"),
+        )
+        .with_columns(
+            pl.when(pl.col("target_now_available"))
+            .then(pl.col("_active_id").is_not_null())
+            .otherwise(pl.lit(None, dtype=pl.Boolean))
+            .alias("target_now"),
+            *[
+                pl.when(pl.col(f"target_{hours}h_available"))
+                .then(
+                    (
+                        pl.col("started_at")
+                        <= pl.col("scoring_timestamp") + pl.duration(hours=hours)
+                    ).fill_null(False)
+                )
+                .otherwise(pl.lit(None, dtype=pl.Boolean))
                 .alias(f"target_{hours}h")
                 for hours in (6, 12, 24)
             ],
@@ -406,7 +430,14 @@ def attach_horizon_targets(
         result.with_columns(
             pl.coalesce(
                 "_active_id",
-                pl.when(pl.col("target_24h")).then(pl.col("_context_group_id")),
+                pl.when(
+                    pl.any_horizontal(
+                        *[
+                            pl.col(f"target_{hours}h").fill_null(False)
+                            for hours in (6, 12, 24)
+                        ]
+                    )
+                ).then(pl.col("_context_group_id")),
             ).alias("episode_group_id")
         )
         .drop(

@@ -33,6 +33,8 @@ _SENSOR_CATEGORY = {
 class LabelProvider(Protocol):
     """Return labels whose start is in the requested interval and object set."""
 
+    observed_until: datetime
+
     def get_incidents(
         self, start: datetime, end: datetime, object_ids: set[str]
     ) -> list[IncidentLabel]: ...
@@ -45,13 +47,18 @@ class LabelImportError(ValueError):
 @dataclass(frozen=True)
 class ProxyLabelConfig:
     episodes: Sequence[IncidentEpisode]
+    observed_until: datetime
     rule_version: str = "smvu-proxy-v1"
     confidence: float = 0.5
+
+    def __post_init__(self) -> None:
+        _validate_observed_until(self.observed_until)
 
 
 class ProxyLabelProvider:
     def __init__(self, config: ProxyLabelConfig) -> None:
         self._config = config
+        self.observed_until = config.observed_until
 
     def get_incidents(
         self, start: datetime, end: datetime, object_ids: set[str]
@@ -78,7 +85,11 @@ class ProxyLabelProvider:
 
 
 class DecisionJournalLabelProvider:
-    def __init__(self, rows: Sequence[Mapping[str, object]]) -> None:
+    def __init__(
+        self, rows: Sequence[Mapping[str, object]], observed_until: datetime
+    ) -> None:
+        _validate_observed_until(observed_until)
+        self.observed_until = observed_until
         self._labels = [
             self._parse_row(index, row) for index, row in enumerate(rows, 1)
         ]
@@ -138,6 +149,11 @@ def _validate_period(start: datetime, end: datetime) -> None:
         raise ValueError("start and end must be timezone-aware")
     if end < start:
         raise ValueError("end must not precede start")
+
+
+def _validate_observed_until(observed_until: datetime) -> None:
+    if observed_until.tzinfo is None or observed_until.utcoffset() is None:
+        raise ValueError("observed_until must be timezone-aware")
 
 
 def _is_fire_pattern(episode: IncidentEpisode) -> bool:

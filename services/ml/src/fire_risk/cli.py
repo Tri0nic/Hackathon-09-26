@@ -210,7 +210,7 @@ def _attach_device_metadata(
     return events.join(metadata, on="channel_id", how="left")
 
 
-def _proxy_labels(episodes: pl.LazyFrame) -> pl.LazyFrame:
+def _proxy_labels(episodes: pl.LazyFrame, observed_until: datetime) -> pl.LazyFrame:
     def label_batch(batch: pl.DataFrame) -> pl.DataFrame:
         labels: list[dict[str, Any]] = []
         for chunk in batch.iter_slices(10_000):
@@ -220,7 +220,9 @@ def _proxy_labels(episodes: pl.LazyFrame) -> pl.LazyFrame:
             ]
             if not records:
                 continue
-            provider = ProxyLabelProvider(ProxyLabelConfig(episodes=records))
+            provider = ProxyLabelProvider(
+                ProxyLabelConfig(episodes=records, observed_until=observed_until)
+            )
             labels.extend(
                 label.model_dump()
                 for label in provider.get_incidents(
@@ -251,6 +253,9 @@ def prepare(
     states: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
     output: Annotated[Path, typer.Option()],
     run_id: Annotated[str, typer.Option()],
+    label_observed_until: Annotated[
+        str, typer.Option(help="Confirmed label coverage end (ISO-8601 with timezone).")
+    ],
     config: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
     source_timezone: Annotated[
         str, typer.Option(help="Timezone of naive source timestamps.")
@@ -259,6 +264,18 @@ def prepare(
     device_as_of: Annotated[str, typer.Option()] = "2026-09-24",
 ) -> None:
     """Write one run directory; repeating identical inputs reproduces its data."""
+    try:
+        observed_until = datetime.fromisoformat(label_observed_until)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "label-observed-until must be an ISO-8601 datetime",
+            param_hint="--label-observed-until",
+        ) from exc
+    if observed_until.tzinfo is None or observed_until.utcoffset() is None:
+        raise typer.BadParameter(
+            "label-observed-until must be timezone-aware",
+            param_hint="--label-observed-until",
+        )
     if (
         not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", run_id)
         or run_id.endswith((".", " "))
@@ -293,6 +310,7 @@ def prepare(
         "device_seed": device_seed,
         "quality_thresholds": asdict(thresholds),
         "proxy_rule_version": "smvu-proxy-v1",
+        "label_observed_until": observed_until.isoformat(),
     }
     started_at = datetime.now(UTC)
     directory.mkdir(parents=True, exist_ok=True)
@@ -351,10 +369,12 @@ def prepare(
     episodes.sink_parquet(directory / "episodes.parquet")
     membership.sink_parquet(directory / "episode_membership.parquet")
     episodes = pl.scan_parquet(directory / "episodes.parquet")
-    _proxy_labels(episodes).sink_parquet(directory / "incident_labels.parquet")
+    _proxy_labels(episodes, observed_until).sink_parquet(
+        directory / "incident_labels.parquet"
+    )
     labels = pl.scan_parquet(directory / "incident_labels.parquet")
     attach_horizon_targets(
-        build_feature_snapshots(normalized, settings), labels
+        build_feature_snapshots(normalized, settings), labels, observed_until
     ).sink_parquet(directory / "feature_snapshots.parquet")
     input_quality_reasons = {
         reason: count

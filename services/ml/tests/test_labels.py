@@ -21,6 +21,30 @@ from fire_risk.data.labels import (
 )
 
 START = datetime(2026, 8, 1, 3, 0, tzinfo=UTC)
+OBSERVED_UNTIL = datetime(2026, 12, 31, tzinfo=UTC)
+
+
+def test_providers_expose_explicit_observation_boundary_without_incidents() -> None:
+    boundary = datetime(2026, 12, 31, tzinfo=UTC)
+    providers: list[LabelProvider] = [
+        ProxyLabelProvider(ProxyLabelConfig(episodes=[], observed_until=boundary)),
+        DecisionJournalLabelProvider([], observed_until=boundary),
+    ]
+    for provider in providers:
+        assert provider.get_incidents(START, boundary, {"42"}) == []
+        assert provider.observed_until == boundary
+        assert provider.get_incidents(START, boundary + timedelta(days=1), {"42"}) == []
+        assert provider.observed_until == boundary
+
+
+@pytest.mark.parametrize("provider_kind", ["proxy", "journal"])
+def test_providers_reject_naive_observation_boundary(provider_kind: str) -> None:
+    naive = OBSERVED_UNTIL.replace(tzinfo=None)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        if provider_kind == "proxy":
+            ProxyLabelProvider(ProxyLabelConfig(episodes=[], observed_until=naive))
+        else:
+            DecisionJournalLabelProvider([], observed_until=naive)
 
 
 def _episode(
@@ -50,10 +74,11 @@ def _episode(
 
 def test_proxy_and_decision_providers_return_same_contract() -> None:
     proxy_provider: LabelProvider = ProxyLabelProvider(
-        ProxyLabelConfig(episodes=[_episode()])
+        ProxyLabelConfig(episodes=[_episode()], observed_until=OBSERVED_UNTIL)
     )
     decision_provider: LabelProvider = DecisionJournalLabelProvider(
-        [{"object_id": "42", "started_at": START, "decision": "confirmed_fire"}]
+        [{"object_id": "42", "started_at": START, "decision": "confirmed_fire"}],
+        observed_until=OBSERVED_UNTIL,
     )
 
     proxy = proxy_provider.get_incidents(START, START + timedelta(hours=1), {"42"})
@@ -78,7 +103,7 @@ def test_decision_requires_identity_and_start_with_row_number(
     del rows[1][missing_field]
 
     with pytest.raises(LabelImportError, match=rf"row 2.*{missing_field}"):
-        DecisionJournalLabelProvider(rows)
+        DecisionJournalLabelProvider(rows, observed_until=OBSERVED_UNTIL)
 
 
 def test_unknown_journal_outcome_is_kept_as_unknown() -> None:
@@ -89,7 +114,8 @@ def test_unknown_journal_outcome_is_kept_as_unknown() -> None:
                 "started_at": START.isoformat(),
                 "decision": "investigating",
             }
-        ]
+        ],
+        observed_until=OBSERVED_UNTIL,
     )
 
     labels = provider.get_incidents(START, START + timedelta(minutes=1), {"42"})
@@ -102,7 +128,8 @@ def test_unknown_journal_outcome_is_kept_as_unknown() -> None:
 @pytest.mark.parametrize("outcome", [decision.value for decision in IncidentDecision])
 def test_journal_accepts_each_exact_decision(outcome: str) -> None:
     provider = DecisionJournalLabelProvider(
-        [{"object_id": "42", "started_at": START, "decision": outcome}]
+        [{"object_id": "42", "started_at": START, "decision": outcome}],
+        observed_until=OBSERVED_UNTIL,
     )
 
     labels = provider.get_incidents(START, START + timedelta(minutes=1), {"42"})
@@ -142,8 +169,10 @@ def test_provider_filters_by_instant_half_open_boundary_and_object() -> None:
         },
     ]
     providers: list[LabelProvider] = [
-        ProxyLabelProvider(ProxyLabelConfig(episodes=episodes)),
-        DecisionJournalLabelProvider(rows),
+        ProxyLabelProvider(
+            ProxyLabelConfig(episodes=episodes, observed_until=OBSERVED_UNTIL)
+        ),
+        DecisionJournalLabelProvider(rows, observed_until=OBSERVED_UNTIL),
     ]
 
     for provider in providers:
@@ -161,7 +190,12 @@ def test_proxy_requires_fire_pattern_and_ignores_historical_artifact() -> None:
         _episode(episode_id="artifact", quality_flags=["historical_artifact"]),
     ]
     provider = ProxyLabelProvider(
-        ProxyLabelConfig(episodes=episodes, rule_version="smvu-v7", confidence=0.65)
+        ProxyLabelConfig(
+            episodes=episodes,
+            observed_until=OBSERVED_UNTIL,
+            rule_version="smvu-v7",
+            confidence=0.65,
+        )
     )
 
     labels = provider.get_incidents(START, START + timedelta(hours=1), {"42"})
@@ -185,7 +219,10 @@ def test_proxy_uses_gas_pump_and_mass_alarm_composition() -> None:
     weak = _episode(episode_id="weak", sensor_types=["smoke", "gas"])
     no_smoke = _episode(episode_id="no-smoke", sensor_types=["gas", "pump"])
     provider = ProxyLabelProvider(
-        ProxyLabelConfig(episodes=[gas_and_pump, mass_alarm, weak, no_smoke])
+        ProxyLabelConfig(
+            episodes=[gas_and_pump, mass_alarm, weak, no_smoke],
+            observed_until=OBSERVED_UNTIL,
+        )
     )
 
     labels = provider.get_incidents(START, START + timedelta(hours=1), {"42"})
@@ -196,7 +233,9 @@ def test_proxy_uses_gas_pump_and_mass_alarm_composition() -> None:
 def test_proxy_requires_alarm_severity() -> None:
     episode = _episode()
     episode.severity = "unknown"
-    provider = ProxyLabelProvider(ProxyLabelConfig(episodes=[episode]))
+    provider = ProxyLabelProvider(
+        ProxyLabelConfig(episodes=[episode], observed_until=OBSERVED_UNTIL)
+    )
 
     assert provider.get_incidents(START, START + timedelta(hours=1), {"42"}) == []
 
@@ -216,7 +255,9 @@ def test_proxy_recognizes_source_sensor_type_names() -> None:
             sensor_types=["Датчик дыма", "УИР-Р"],
         ),
     ]
-    provider = ProxyLabelProvider(ProxyLabelConfig(episodes=episodes))
+    provider = ProxyLabelProvider(
+        ProxyLabelConfig(episodes=episodes, observed_until=OBSERVED_UNTIL)
+    )
 
     labels = provider.get_incidents(START, START + timedelta(hours=1), {"42"})
 
@@ -231,10 +272,13 @@ def test_proxy_recognizes_source_sensor_type_names() -> None:
 def test_providers_reject_naive_or_reversed_period(provider_kind: str) -> None:
     provider: LabelProvider
     if provider_kind == "proxy":
-        provider = ProxyLabelProvider(ProxyLabelConfig(episodes=[_episode()]))
+        provider = ProxyLabelProvider(
+            ProxyLabelConfig(episodes=[_episode()], observed_until=OBSERVED_UNTIL)
+        )
     else:
         provider = DecisionJournalLabelProvider(
-            [{"object_id": "42", "started_at": START, "decision": "confirmed_fire"}]
+            [{"object_id": "42", "started_at": START, "decision": "confirmed_fire"}],
+            observed_until=OBSERVED_UNTIL,
         )
 
     with pytest.raises(ValueError, match="timezone-aware"):
@@ -246,7 +290,8 @@ def test_providers_reject_naive_or_reversed_period(provider_kind: str) -> None:
 def test_decision_rejects_invalid_start_with_row_number() -> None:
     with pytest.raises(LabelImportError, match="row 1.*started_at"):
         DecisionJournalLabelProvider(
-            [{"object_id": "42", "started_at": "yesterday", "decision": "false_alarm"}]
+            [{"object_id": "42", "started_at": "yesterday", "decision": "false_alarm"}],
+            observed_until=OBSERVED_UNTIL,
         )
 
 
@@ -267,7 +312,8 @@ def test_journal_keeps_optional_incident_details() -> None:
                 "confidence": 0.85,
                 "rule_version": "dispatcher-v3",
             }
-        ]
+        ],
+        observed_until=OBSERVED_UNTIL,
     )
 
     label = provider.get_incidents(START, START + timedelta(hours=1), {"42"})[0]
@@ -291,7 +337,8 @@ def test_journal_query_returns_independent_label_objects() -> None:
                 "decision": "confirmed_fire",
                 "incident_type": "fire",
             }
-        ]
+        ],
+        observed_until=OBSERVED_UNTIL,
     )
     first = provider.get_incidents(START, START + timedelta(hours=1), {"42"})[0]
     first.incident_type = "changed by caller"
@@ -332,7 +379,9 @@ def test_proxy_uses_only_alarming_event_composition_from_built_episodes() -> Non
         IncidentEpisode.model_validate(row)
         for row in episodes_frame.collect().to_dicts()
     ]
-    provider = ProxyLabelProvider(ProxyLabelConfig(episodes=episodes))
+    provider = ProxyLabelProvider(
+        ProxyLabelConfig(episodes=episodes, observed_until=OBSERVED_UNTIL)
+    )
 
     labels = provider.get_incidents(START, START + timedelta(hours=2), {"42"})
 
@@ -349,6 +398,8 @@ def test_proxy_ignores_legacy_episode_without_alarm_composition() -> None:
         channel_ids=["smoke-1", "heat-1"],
         sensor_types=["smoke", "heat"],
     )
-    provider = ProxyLabelProvider(ProxyLabelConfig(episodes=[episode]))
+    provider = ProxyLabelProvider(
+        ProxyLabelConfig(episodes=[episode], observed_until=OBSERVED_UNTIL)
+    )
 
     assert provider.get_incidents(START, START + timedelta(hours=1), {"42"}) == []

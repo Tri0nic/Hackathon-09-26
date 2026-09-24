@@ -16,6 +16,7 @@ from fire_risk.data.quality import (
 )
 
 START = datetime(2024, 1, 3, tzinfo=UTC)
+OBSERVED_UNTIL = START + timedelta(days=100)
 
 
 def events(minutes: list[int]) -> pl.LazyFrame:
@@ -170,6 +171,73 @@ def incidents() -> pl.LazyFrame:
     ).lazy()
 
 
+def test_targets_are_null_when_complete_window_is_unobserved() -> None:
+    score = datetime(2026, 1, 1, tzinfo=UTC)
+    snapshots = pl.DataFrame(
+        {"object_id": ["mine"], "scoring_timestamp": [score]}
+    ).lazy()
+    result = (
+        attach_horizon_targets(
+            snapshots, incidents().filter(pl.lit(False)), score + timedelta(hours=10)
+        )
+        .collect()
+        .row(0, named=True)
+    )
+    assert result["target_now_available"] is True
+    assert result["target_6h_available"] is True
+    assert result["target_12h_available"] is False
+    assert result["target_24h_available"] is False
+    assert result["target_now"] is False
+    assert result["target_6h"] is False
+    assert result["target_12h"] is None
+    assert result["target_24h"] is None
+
+
+@pytest.mark.parametrize(
+    ("hours", "expected"),
+    [
+        (6, (True, True, False, False)),
+        (12, (True, True, True, False)),
+        (24, (True, True, True, True)),
+    ],
+)
+def test_horizon_is_available_at_exact_observation_boundary(
+    hours: int, expected: tuple[bool, bool, bool, bool]
+) -> None:
+    snapshots = pl.DataFrame(
+        {"object_id": ["mine"], "scoring_timestamp": [START]}
+    ).lazy()
+    result = (
+        attach_horizon_targets(
+            snapshots, incidents().filter(pl.lit(False)), START + timedelta(hours=hours)
+        )
+        .collect()
+        .row(0, named=True)
+    )
+    assert (
+        tuple(result[f"target_{h}_available"] for h in ("now", "6h", "12h", "24h"))
+        == expected
+    )
+    assert tuple(result[f"target_{h}"] for h in ("now", "6h", "12h", "24h")) == tuple(
+        False if available else None for available in expected
+    )
+
+
+def test_availability_filter_excludes_censored_rows_from_negative_training() -> None:
+    snapshots = pl.DataFrame(
+        {
+            "object_id": ["mine", "mine"],
+            "scoring_timestamp": [START, START + timedelta(hours=8)],
+        }
+    ).lazy()
+    result = attach_horizon_targets(
+        snapshots, incidents().filter(pl.lit(False)), START + timedelta(hours=13)
+    )
+    eligible = result.filter(pl.col("target_6h_available")).collect()
+    assert eligible["scoring_timestamp"].to_list() == [START]
+    assert eligible["target_6h"].to_list() == [False]
+
+
 def test_horizon_boundaries_are_cumulative_and_now_is_half_open() -> None:
     snapshots = pl.DataFrame(
         {
@@ -180,7 +248,7 @@ def test_horizon_boundaries_are_cumulative_and_now_is_half_open() -> None:
             ],
         }
     ).lazy()
-    result = attach_horizon_targets(snapshots, incidents()).collect()
+    result = attach_horizon_targets(snapshots, incidents(), OBSERVED_UNTIL).collect()
     assert result.select(
         "target_now", "target_6h", "target_12h", "target_24h"
     ).rows() == [
@@ -210,7 +278,7 @@ def test_targets_preserve_rows_with_no_incident_or_another_object() -> None:
         {"object_id": ["elsewhere"], "scoring_timestamp": [START]}
     ).lazy()
     for labels in [incidents(), incidents().filter(pl.lit(False))]:
-        result = attach_horizon_targets(snapshots, labels).collect()
+        result = attach_horizon_targets(snapshots, labels, OBSERVED_UNTIL).collect()
         assert result.height == 1
         assert result["target_now"].item() is False
         assert result["episode_group_id"].item() is None
@@ -233,7 +301,7 @@ def test_overlapping_incidents_select_active_group_before_future_group() -> None
             "scoring_timestamp": [START, START + timedelta(minutes=15)],
         }
     ).lazy()
-    result = attach_horizon_targets(snapshots, labels).collect()
+    result = attach_horizon_targets(snapshots, labels, OBSERVED_UNTIL).collect()
     assert result["target_now"].to_list() == [True, True]
     assert result["episode_group_id"].to_list() == ["fire-a", "fire-a"]
 
@@ -252,8 +320,10 @@ def test_future_incident_changes_target_without_changing_past_features() -> None
     labels = incidents().with_columns(
         pl.lit(START + timedelta(hours=1)).alias("started_at")
     )
-    before = attach_horizon_targets(past, labels.filter(pl.lit(False))).collect()
-    after = attach_horizon_targets(updated, labels).collect()
+    before = attach_horizon_targets(
+        past, labels.filter(pl.lit(False)), OBSERVED_UNTIL
+    ).collect()
+    after = attach_horizon_targets(updated, labels, OBSERVED_UNTIL).collect()
     assert before["target_6h"].item() is False
     assert after["target_6h"].item() is True
     assert_frame_equal(
@@ -278,13 +348,17 @@ def test_negative_decisions_are_not_fire_targets_but_proxy_unknown_is() -> None:
             incidents().with_columns(
                 pl.lit(decision).alias("decision"), pl.lit("dispatcher").alias("source")
             ),
+            OBSERVED_UNTIL,
         ).collect()
         assert result["target_now"].item() is False
     proxy = incidents().with_columns(
         pl.lit("unknown").alias("decision"), pl.lit("proxy").alias("source")
     )
     assert (
-        attach_horizon_targets(snapshots, proxy).collect()["target_now"].item() is True
+        attach_horizon_targets(snapshots, proxy, OBSERVED_UNTIL)
+        .collect()["target_now"]
+        .item()
+        is True
     )
 
 
@@ -328,7 +402,7 @@ def test_connected_forecast_contexts_share_one_group_across_active_and_future_ro
             ],
         }
     ).lazy()
-    result = attach_horizon_targets(snapshots, labels).collect()
+    result = attach_horizon_targets(snapshots, labels, OBSERVED_UNTIL).collect()
     assert result["target_6h"].to_list() == [True, True, True, False, False]
     assert result["target_now"].to_list() == [True, False, False, True, True]
     assert result["episode_group_id"].to_list() == [
@@ -365,8 +439,10 @@ def test_context_components_are_transitive_and_stable_under_incident_reordering(
         "object_id", pl.col("started_at").alias("scoring_timestamp")
     )
     expected_groups = ["fire-a", "fire-a", "fire-a", "other-fire"]
-    forward = attach_horizon_targets(snapshots, labels).collect()
-    reversed_order = attach_horizon_targets(snapshots, labels.reverse()).collect()
+    forward = attach_horizon_targets(snapshots, labels, OBSERVED_UNTIL).collect()
+    reversed_order = attach_horizon_targets(
+        snapshots, labels.reverse(), OBSERVED_UNTIL
+    ).collect()
     assert forward["episode_group_id"].to_list() == expected_groups
     assert_frame_equal(forward, reversed_order)
 
@@ -419,7 +495,7 @@ def test_ongoing_incidents_connect_later_contexts_even_when_end_column_is_all_nu
     snapshots = labels.select(
         "object_id", pl.col("started_at").alias("scoring_timestamp")
     )
-    result = attach_horizon_targets(snapshots, labels).collect()
+    result = attach_horizon_targets(snapshots, labels, OBSERVED_UNTIL).collect()
     assert result["target_now"].to_list() == [True, True]
     assert result["episode_group_id"].to_list() == ["ongoing-a", "ongoing-a"]
 

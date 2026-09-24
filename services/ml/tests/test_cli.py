@@ -42,7 +42,26 @@ def prepare_args(
         str(output),
         "--run-id",
         "test-run",
+        "--label-observed-until",
+        "2026-12-31T00:00:00+00:00",
     ]
+
+
+def test_prepare_requires_explicit_label_observation_boundary(tmp_path: Path) -> None:
+    args = prepare_args(tmp_path)
+    del args[-2:]
+    result = RUNNER.invoke(app, args)
+    assert result.exit_code == 2
+    assert "label-observed-until" in result.output
+
+
+def test_prepare_records_label_observation_boundary(tmp_path: Path) -> None:
+    result = RUNNER.invoke(app, prepare_args(tmp_path))
+    assert result.exit_code == 0, result.output + str(result.exception)
+    manifest = json.loads((tmp_path / "test-run" / "manifest.json").read_text())
+    assert (
+        manifest["configuration"]["label_observed_until"] == "2026-12-31T00:00:00+00:00"
+    )
 
 
 def test_prepare_writes_outputs_and_reproducible_manifest_without_mutating_sources(
@@ -160,7 +179,7 @@ def test_cli_wires_normalization_episodes_proxy_targets_and_quality(
 
 def test_run_id_cannot_escape_output_directory(tmp_path: Path) -> None:
     args = prepare_args(tmp_path)
-    args[-1] = "../escaped"
+    args[args.index("--run-id") + 1] = "../escaped"
     result = RUNNER.invoke(app, args)
     assert result.exit_code != 0
     assert not (tmp_path.parent / "escaped").exists()
@@ -356,7 +375,7 @@ def test_invalid_windows_run_ids_fail_before_writing_outputs(
 ) -> None:
     output = tmp_path / "out"
     args = prepare_args(output)
-    args[-1] = run_id
+    args[args.index("--run-id") + 1] = run_id
     result = RUNNER.invoke(app, args)
     assert result.exit_code == 2, result.output + str(result.exception)
     assert not output.exists()
@@ -369,7 +388,7 @@ def test_run_id_cannot_alias_another_id_by_case(tmp_path: Path) -> None:
     marker = existing / "keep.txt"
     marker.write_text("unchanged", encoding="utf-8")
     args = prepare_args(tmp_path)
-    args[-1] = "TEST-RUN"
+    args[args.index("--run-id") + 1] = "TEST-RUN"
     result = RUNNER.invoke(app, args)
     assert result.exit_code == 2, result.output + str(result.exception)
     assert sorted(path.name for path in existing.iterdir()) == ["keep.txt"]
