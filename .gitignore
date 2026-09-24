@@ -1,0 +1,61 @@
+# Source and generated data
+dataset/
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.parquet
+*.feather
+*.arrow
+.artifacts/
+artifacts/
+data/raw/
+data/processed/
+
+# Models and experiment outputs
+*.pkl
+*.pickle
+*.joblib
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.h5
+mlruns/
+wandb/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+*.egg-info/
+dist/
+build/
+
+# JavaScript and .NET
+node_modules/
+bin/
+obj/
+
+# IDE, OS, and local worktrees
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+.worktrees/
+worktrees/
+.superpowers/
