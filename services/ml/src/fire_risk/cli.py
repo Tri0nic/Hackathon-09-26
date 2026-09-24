@@ -19,6 +19,7 @@ from fire_risk.data.csv_reader import partition_events
 from fire_risk.data.device_metadata import DeviceAgeConfig, estimate_device_metadata
 from fire_risk.data.episodes import build_episodes
 from fire_risk.data.features import attach_horizon_targets, build_feature_snapshots
+from fire_risk.data.inventory import build_object_inventory
 from fire_risk.data.labels import ProxyLabelConfig, ProxyLabelProvider
 from fire_risk.data.normalize import normalize_value
 from fire_risk.data.pickets import parse_picket
@@ -31,6 +32,7 @@ from fire_risk.data.references import (
     build_coverage_report,
     join_channels,
     load_state_index,
+    scan_channel_reference,
 )
 
 app = typer.Typer(no_args_is_help=True)
@@ -373,8 +375,12 @@ def prepare(
         directory / "incident_labels.parquet"
     )
     labels = pl.scan_parquet(directory / "incident_labels.parquet")
+    inventory = scan_channel_reference(channels)
+    inventory_totals, inventory_by_type = build_object_inventory(inventory)
+    inventory_totals.sink_parquet(directory / "inventory_totals.parquet")
+    inventory_by_type.sink_parquet(directory / "inventory_by_type.parquet")
     attach_horizon_targets(
-        build_feature_snapshots(normalized, settings), labels, observed_until
+        build_feature_snapshots(normalized, settings, inventory), labels, observed_until
     ).sink_parquet(directory / "feature_snapshots.parquet")
     input_quality_reasons = {
         reason: count
@@ -421,6 +427,8 @@ def prepare(
             "episode_membership",
             "incident_labels",
             "feature_snapshots",
+            "inventory_totals",
+            "inventory_by_type",
         )
     }
     _write_json(directory / "coverage.json", coverage_json)

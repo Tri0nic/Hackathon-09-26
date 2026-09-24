@@ -21,6 +21,8 @@ OUTPUTS = [
     "episode_membership",
     "incident_labels",
     "feature_snapshots",
+    "inventory_totals",
+    "inventory_by_type",
 ]
 
 
@@ -82,6 +84,8 @@ def test_prepare_writes_outputs_and_reproducible_manifest_without_mutating_sourc
         "episode_membership": 2,
         "incident_labels": 0,
         "feature_snapshots": 0,
+        "inventory_totals": 2,
+        "inventory_by_type": 2,
     }
     assert manifest["run_id"] == "test-run"
     assert len(manifest["config_hash"]) == 64
@@ -166,6 +170,11 @@ def test_cli_wires_normalization_episodes_proxy_targets_and_quality(
     assert labels["decision"].item() == "unknown"
     snapshots = pl.read_parquet(directory / "feature_snapshots.parquet")
     assert snapshots.height == 9
+    assert snapshots["inventory_channel_count"].to_list() == [2] * 9
+    assert snapshots["fresh_channel_count"][0] == 1
+    assert snapshots["stale_channel_count"][0] == 1
+    assert snapshots["fresh_heat_channel_count"][0] == 0
+    assert pl.read_parquet(directory / "inventory_by_type.parquet").height == 2
     assert snapshots["target_6h"][0] is True
     assert snapshots["event_count_5m"][0] == 1
     assert snapshots["target_now"][4] is True

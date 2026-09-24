@@ -5,6 +5,11 @@ from datetime import datetime
 import polars as pl
 
 from fire_risk.config import PipelineConfig
+from fire_risk.data.inventory import (
+    SIGNAL_FAMILIES,
+    build_object_inventory,
+    family_expression,
+)
 from fire_risk.data.quality import (
     QualityThresholds,
     causal_quality_flags,
@@ -15,14 +20,6 @@ from fire_risk.data.quality import (
 _WINDOWS = ("5m", "30m", "3h", "6h", "24h")
 _WINDOW_SECONDS = (300, 1800, 10800, 21600, 86400)
 _KEYS = ["object_id", "scoring_timestamp"]
-_CATEGORIES = {
-    "smoke": ["smoke", "датчик дыма"],
-    "heat": ["heat", "датчик температуры"],
-    "gas": ["gas", "газовый датчик"],
-    "manual": ["manual_call_point", "ручной извещатель"],
-    "uir": ["uir-r", "уир-р"],
-    "pump": ["pump", "насос"],
-}
 
 
 def _feature_events(events: pl.LazyFrame) -> pl.LazyFrame:
@@ -102,13 +99,8 @@ def _feature_events(events: pl.LazyFrame) -> pl.LazyFrame:
         pl.col("baseline_excluded").fill_null(False).alias("_baseline_excluded"),
         *[pl.col(flag).fill_null(False) for flag in flags],
         *[
-            pl.col("sensor_type")
-            .str.strip_chars()
-            .str.to_lowercase()
-            .is_in(values)
-            .fill_null(False)
-            .alias(f"_{category}")
-            for category, values in _CATEGORIES.items()
+            family_expression(category).alias(f"_{category}")
+            for category in SIGNAL_FAMILIES
         ],
         pl.lit(True).alias("_event"),
         pl.lit(False).alias("_snapshot"),
@@ -404,8 +396,142 @@ def _window_features(window: str, config: PipelineConfig) -> list[pl.Expr]:
     return [expr.alias(f"{name}_{window}") for name, expr in expressions.items()]
 
 
+def _freshness_partition(
+    events: pl.LazyFrame, grid: pl.LazyFrame, inventory: pl.LazyFrame
+) -> pl.LazyFrame:
+    """Union one channel's closed 24h intervals, then count active intervals.
+
+    This equals testing its last observation <= t against t - 24h, without a
+    channel x snapshot product. At most E intervals and 2E endpoint records
+    exist per object. A future event can extend an interval only through a
+    period that was already fresh; no earlier snapshot changes.
+    """
+    keys = ["object_id", "channel_id"]
+    intervals = (
+        events.filter(pl.col("registered_at").is_not_null())
+        .select(*keys, "registered_at")
+        .join(inventory.select(*keys, "sensor_type"), on=keys, how="inner")
+        .sort([*keys, "registered_at"])
+        .with_columns(
+            (pl.col("registered_at").diff().over(keys) > pl.duration(hours=24))
+            .fill_null(True)
+            .cast(pl.Int64)
+            .alias("_new_interval")
+        )
+        .with_columns(pl.col("_new_interval").cum_sum().over(keys).alias("_interval"))
+        .group_by(*keys, "_interval")
+        .agg(
+            pl.col("registered_at").min().alias("_start"),
+            (pl.col("registered_at").max() + pl.duration(hours=24)).alias("_end"),
+            pl.col("sensor_type").first(),
+        )
+        .with_columns(
+            pl.lit(1, dtype=pl.Int64).alias("_all"),
+            *[
+                family_expression(family).cast(pl.Int64).alias(f"_{family}")
+                for family in SIGNAL_FAMILIES
+            ],
+        )
+        .cache()
+    )
+    families = ["all", *SIGNAL_FAMILIES]
+    result = grid.rename({"registered_at": "scoring_timestamp"}).sort(_KEYS)
+    for endpoint, inclusive in [("start", True), ("end", False)]:
+        counts = (
+            intervals.group_by("object_id", f"_{endpoint}")
+            .agg(
+                *[
+                    pl.col(f"_{family}").sum().alias(f"_{endpoint}_{family}")
+                    for family in families
+                ]
+            )
+            .sort(["object_id", f"_{endpoint}"])
+            .with_columns(
+                *[
+                    pl.col(f"_{endpoint}_{family}").cum_sum().over("object_id")
+                    for family in families
+                ]
+            )
+        )
+        result = result.join_asof(
+            counts,
+            left_on="scoring_timestamp",
+            right_on=f"_{endpoint}",
+            by="object_id",
+            strategy="backward",
+            allow_exact_matches=inclusive,
+            check_sortedness=False,
+        )
+    return result.select(
+        *_KEYS,
+        *[
+            (
+                pl.col(f"_start_{family}").fill_null(0)
+                - pl.col(f"_end_{family}").fill_null(0)
+            ).alias(
+                "fresh_channel_count"
+                if family == "all"
+                else f"fresh_{family}_channel_count"
+            )
+            for family in families
+        ],
+    )
+
+
+def _freshness_features(
+    events: pl.LazyFrame, grid: pl.LazyFrame, inventory: pl.LazyFrame
+) -> pl.LazyFrame:
+    """Keep window/sort fallback memory bounded to a single object's history."""
+    totals, _ = build_object_inventory(inventory)
+    object_ids = (
+        grid.select("object_id")
+        .unique()
+        .sort("object_id")
+        .collect(engine="streaming")["object_id"]
+        .to_list()
+    )
+    partitions = [
+        _freshness_partition(
+            events.filter(pl.col("object_id") == object_id),
+            grid.filter(pl.col("object_id") == object_id),
+            inventory.filter(pl.col("object_id") == object_id),
+        )
+        for object_id in object_ids
+    ]
+    fresh = (
+        pl.concat(partitions, parallel=False)
+        if partitions
+        else _freshness_partition(events, grid, inventory)
+    )
+    result = fresh.join(totals, on="object_id", how="left")
+    suffixes = [
+        "channel_count",
+        *[f"{family}_channel_count" for family in SIGNAL_FAMILIES],
+    ]
+    return (
+        result.with_columns(
+            *[pl.col(f"inventory_{suffix}").fill_null(0) for suffix in suffixes]
+        )
+        .with_columns(
+            *[
+                (pl.col(f"inventory_{suffix}") - pl.col(f"fresh_{suffix}")).alias(
+                    f"stale_{suffix}"
+                )
+                for suffix in suffixes
+            ]
+        )
+        .with_columns(
+            pl.when(pl.col("inventory_channel_count") > 0)
+            .then(pl.col("stale_channel_count") / pl.col("inventory_channel_count"))
+            .otherwise(pl.lit(None, dtype=pl.Float64))
+            .alias("stale_channel_share")
+        )
+        .sort(_KEYS)
+    )
+
+
 def build_feature_snapshots(
-    events: pl.LazyFrame, config: PipelineConfig
+    events: pl.LazyFrame, config: PipelineConfig, inventory: pl.LazyFrame | None = None
 ) -> pl.LazyFrame:
     """Build a per-object grid from floor(first event) to ceil(last event).
 
@@ -419,6 +545,9 @@ def build_feature_snapshots(
     raw values/event IDs, unverifiable technical flags default to zero; existing
     exclusion annotations can only exclude completed days from the baseline.
     No incident, label, or current whole-day profile enters a window feature.
+    When the canonical channel reference is provided as inventory, freshness
+    uses [t - 24h, t] inclusively. Never-observed channels are stale. Omitting
+    inventory preserves the legacy feature schema, without inferring a reference.
     """
     if config.scoring_step_minutes <= 0:
         raise ValueError("scoring_step_minutes must be positive")
@@ -454,6 +583,10 @@ def build_feature_snapshots(
     result = grid.rename({"registered_at": "scoring_timestamp"}).join(
         _duration_features(source, grid), on=_KEYS, how="left"
     )
+    if inventory is not None:
+        result = result.join(
+            _freshness_features(events, grid, inventory), on=_KEYS, how="left"
+        )
     for window in _WINDOWS:
         rolled = (
             timeline.rolling(

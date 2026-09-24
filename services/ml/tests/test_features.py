@@ -50,6 +50,208 @@ def at_start(frame: pl.LazyFrame) -> pl.DataFrame:
     return frame.filter(pl.col("scoring_timestamp") == START).collect()
 
 
+def test_freshness_uses_reference_denominator_and_never_seen_channels() -> None:
+    inventory = pl.DataFrame(
+        {
+            "object_id": ["mine"] * 3,
+            "channel_id": ["recent", "old", "never"],
+            "sensor_type": ["Датчик дыма", "heat", "gas"],
+        }
+    ).lazy()
+    source = events([-1441, -10, 0]).with_columns(
+        pl.Series("channel_id", ["old", "recent", "not-in-reference"]),
+        pl.lit("wrong-event-type").alias("sensor_type"),
+    )
+    before = at_start(build_feature_snapshots(source, PipelineConfig(), inventory))
+    assert before.select(
+        "inventory_channel_count", "fresh_channel_count", "stale_channel_count"
+    ).row(0) == (3, 1, 2)
+    assert before["stale_channel_share"].item() == pytest.approx(2 / 3)
+    for family, want in [
+        ("smoke", (1, 1, 0)),
+        ("heat", (1, 0, 1)),
+        ("gas", (1, 0, 1)),
+        ("manual", (0, 0, 0)),
+    ]:
+        assert (
+            before.select(
+                *(
+                    f"{kind}_{family}_channel_count"
+                    for kind in ("inventory", "fresh", "stale")
+                )
+            ).row(0)
+            == want
+        )
+    future = events([1, 2]).with_columns(
+        pl.Series("channel_id", ["old", "never"]),
+        pl.lit("wrong-event-type").alias("sensor_type"),
+    )
+    assert_frame_equal(
+        before,
+        at_start(
+            build_feature_snapshots(
+                pl.concat([source, future]), PipelineConfig(), inventory
+            )
+        ),
+    )
+
+
+def test_freshness_includes_exact_24h_boundary_and_handles_repeated_events() -> None:
+    inventory = pl.DataFrame(
+        {
+            "object_id": ["mine"] * 5,
+            "channel_id": ["exact", "older", "repeated", "now", "future"],
+            "sensor_type": ["smoke"] * 5,
+        }
+    ).lazy()
+    source = events([-1440, -1440, -1440, -1439, 0, 1]).with_columns(
+        pl.Series(
+            "channel_id", ["exact", "older", "repeated", "repeated", "now", "future"]
+        ),
+    )
+    source = source.with_columns(
+        pl.when(pl.col("channel_id") == "older")
+        .then(pl.lit(START - timedelta(hours=24, microseconds=1)))
+        .otherwise(pl.col("registered_at"))
+        .alias("registered_at")
+    )
+    current = at_start(build_feature_snapshots(source, PipelineConfig(), inventory))
+    assert current["fresh_channel_count"].item() == 3
+    assert current["stale_channel_count"].item() == 2
+
+
+def test_inventory_empty_or_unmatched_does_not_invent_observed_inventory() -> None:
+    inventory = pl.DataFrame(
+        {"object_id": ["other"], "channel_id": ["ch-0"], "sensor_type": ["smoke"]}
+    ).lazy()
+    for reference in [inventory, inventory.head(0)]:
+        current = at_start(
+            build_feature_snapshots(events([0]), PipelineConfig(), reference)
+        )
+        assert current["inventory_channel_count"].item() == 0
+        assert current["fresh_channel_count"].item() == 0
+        assert current["stale_channel_count"].item() == 0
+        assert current["stale_channel_share"].item() is None
+        assert (
+            build_feature_snapshots(events([]), PipelineConfig(), reference)
+            .collect()
+            .is_empty()
+        )
+
+
+def test_freshness_ignores_null_timestamps_like_the_snapshot_builder() -> None:
+    source = events([0, 1]).with_columns(
+        pl.when(pl.col("channel_id") == "ch-1")
+        .then(pl.lit(None, dtype=pl.Datetime("us", "UTC")))
+        .otherwise(pl.col("registered_at"))
+        .alias("registered_at")
+    )
+    reference = source.select("object_id", "channel_id", "sensor_type")
+    result = at_start(build_feature_snapshots(source, PipelineConfig(), reference))
+    assert result["fresh_channel_count"].item() == 1
+    assert result["stale_channel_count"].item() == 1
+
+
+def test_freshness_intermediates_are_bounded_by_events_and_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reference = pl.DataFrame(
+        {
+            "object_id": [f"object-{obj}" for obj in range(4) for _ in range(64)],
+            "channel_id": [f"{obj}-{ch}" for obj in range(4) for ch in range(64)],
+            "sensor_type": ["smoke"] * 256,
+        }
+    ).lazy()
+    source = reference.with_columns(pl.lit(START).alias("registered_at"))
+    grid = pl.DataFrame(
+        {
+            "object_id": [f"object-{obj}" for obj in range(4) for _ in range(193)],
+            "registered_at": [
+                START + timedelta(minutes=15 * i) for _ in range(4) for i in range(193)
+            ],
+        }
+    ).lazy()
+    observed: list[int] = []
+    partition_sizes: list[tuple[int, int]] = []
+    original_partition = feature_module._freshness_partition
+
+    def instrument_partition(source, *args):
+        def record_partition(frame: pl.DataFrame) -> pl.DataFrame:
+            partition_sizes.append((frame.height, frame["object_id"].n_unique()))
+            return frame
+
+        bounded = source.map_batches(
+            record_partition,
+            schema=source.collect_schema(),
+            predicate_pushdown=False,
+            projection_pushdown=False,
+            slice_pushdown=False,
+        )
+        return original_partition(bounded, *args)
+
+    monkeypatch.setattr(feature_module, "_freshness_partition", instrument_partition)
+    for method in ("join", "join_asof"):
+        original = getattr(pl.LazyFrame, method)
+
+        def instrument(self, *args, _original=original, **kwargs):
+            joined = _original(self, *args, **kwargs)
+
+            def record(frame: pl.DataFrame) -> pl.DataFrame:
+                observed.append(frame.height)
+                return frame
+
+            return joined.map_batches(
+                record,
+                schema=joined.collect_schema(),
+                predicate_pushdown=False,
+                projection_pushdown=False,
+                slice_pushdown=False,
+            )
+
+        monkeypatch.setattr(pl.LazyFrame, method, instrument)
+    result = feature_module._freshness_features(source, grid, reference).collect()
+    assert observed
+    assert partition_sizes
+    assert max(rows for rows, _ in partition_sizes) == 64
+    assert max(objects for _, objects in partition_sizes) == 1
+    assert max(observed) <= 256 + 772
+    assert result.height == 772
+    first = result.filter(pl.col("scoring_timestamp") == START)
+    exact = result.filter(pl.col("scoring_timestamp") == START + timedelta(hours=24))
+    expired = result.filter(
+        pl.col("scoring_timestamp") == START + timedelta(hours=24, minutes=15)
+    )
+    assert first["fresh_channel_count"].to_list() == [64] * 4
+    assert exact["fresh_channel_count"].to_list() == [64] * 4
+    assert expired["fresh_channel_count"].to_list() == [0] * 4
+
+
+def test_freshness_unions_touching_intervals_and_reactivates_after_a_gap() -> None:
+    source = events([0, 0, 1440, 4320]).with_columns(
+        pl.Series("channel_id", ["a", "b", "a", "b"])
+    )
+    reference = pl.DataFrame(
+        {
+            "object_id": ["mine"] * 3,
+            "channel_id": ["a", "b", "never"],
+            "sensor_type": ["smoke"] * 3,
+        }
+    ).lazy()
+    offsets = [timedelta(hours=h) for h in (0, 24, 48, 72, 96)]
+    offsets.extend([timedelta(hours=h, microseconds=1) for h in (24, 48, 96)])
+    grid = pl.DataFrame(
+        {
+            "object_id": ["mine"] * 8,
+            "registered_at": [START + offset for offset in sorted(offsets)],
+        }
+    ).lazy()
+    result = feature_module._freshness_features(
+        source.reverse(), grid, reference
+    ).collect()
+    assert result["fresh_channel_count"].to_list() == [2, 2, 1, 1, 0, 1, 1, 0]
+    assert result["stale_channel_count"].to_list() == [1, 1, 2, 2, 3, 2, 2, 3]
+
+
 def state_events(
     minutes: list[int], channels: list[str], values: list[str], kinds: list[str]
 ) -> pl.LazyFrame:
