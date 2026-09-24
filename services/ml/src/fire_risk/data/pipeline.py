@@ -56,6 +56,10 @@ _NORMALIZED_TYPE = pl.Struct(
         "normalization_rule": pl.String,
         "_alarm": pl.Boolean,
         "_value_flags": pl.List(pl.String),
+    }
+)
+_PICKET_TYPE = pl.Struct(
+    {
         "picket_raw": pl.String,
         "picket_sort_key": pl.Float64,
         "location_group": pl.String,
@@ -165,7 +169,6 @@ def _normalize_events(
         value = normalize_value(
             row["sensor_type"] or "", row["raw_value"] or "", index, config
         )
-        picket = parse_picket(row["sensor_name"] or "")
         return {
             "value_kind": value.kind.value,
             "numeric_value": value.numeric_value,
@@ -173,18 +176,57 @@ def _normalize_events(
             "normalization_rule": value.rule_code,
             "_alarm": value.alarm_flag,
             "_value_flags": value.quality_flags,
+        }
+
+    def locate(name: str | None) -> dict[str, Any]:
+        picket = parse_picket(name or "")
+        return {
             "picket_raw": picket.raw,
             "picket_sort_key": picket.sort_key,
             "location_group": picket.location_group,
         }
 
-    return (
-        events.with_columns(
-            pl.struct("sensor_type", "raw_value", "sensor_name")
+    # Distinct precedes each Python expression in the lazy plan. Event volume
+    # stays in native streaming joins; only value/name cardinality reaches
+    # Python, and no complete event frame is materialized here.
+    value_keys = ["sensor_type", "raw_value"]
+    values = (
+        events.select(value_keys)
+        .unique()
+        .with_columns(
+            pl.struct(value_keys)
             .map_elements(normalize, return_dtype=_NORMALIZED_TYPE)
             .alias("_normalized")
         )
         .unnest("_normalized")
+    )
+    locations = (
+        events.select("sensor_name")
+        .unique()
+        .with_columns(
+            pl.col("sensor_name")
+            .map_elements(locate, return_dtype=_PICKET_TYPE, skip_nulls=False)
+            .alias("_picket")
+        )
+        .unnest("_picket")
+    )
+    return (
+        events.join(
+            values,
+            on=value_keys,
+            how="left",
+            nulls_equal=True,
+            validate="m:1",
+            maintain_order="left",
+        )
+        .join(
+            locations,
+            on="sensor_name",
+            how="left",
+            nulls_equal=True,
+            validate="m:1",
+            maintain_order="left",
+        )
         .with_columns(
             pl.col("alarm_flag").alias("source_alarm_flag"),
             (
