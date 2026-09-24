@@ -44,6 +44,183 @@ def at_start(frame: pl.LazyFrame) -> pl.DataFrame:
     return frame.filter(pl.col("scoring_timestamp") == START).collect()
 
 
+def state_events(
+    minutes: list[int], channels: list[str], values: list[str], kinds: list[str]
+) -> pl.LazyFrame:
+    return events(minutes).with_columns(
+        pl.Series("event_id", [f"{i:03}" for i in range(len(minutes))]),
+        pl.Series("channel_id", channels),
+        pl.Series("raw_value", values),
+        pl.Series("value_kind", kinds),
+    )
+
+
+def test_state_durations_use_last_change_and_clip_each_channel_independently() -> None:
+    source = state_events(
+        [-40, -10, -3, -2000, -20, -2, 0],
+        ["a", "a", "a", "b", "c", "c", "d"],
+        ["normal", "alarm", "alarm", "broken", "broken", "broken", "normal"],
+        ["known_state"] * 3 + ["malfunction"] * 3 + ["known_state"],
+    )
+    before = at_start(build_feature_snapshots(source, PipelineConfig()))
+    for window, total, maximum, malfunction, malfunction_max in [
+        ("5m", 900, 300, 600, 300),
+        ("30m", 3600, 1800, 3000, 1800),
+        ("3h", 12600, 10800, 12000, 10800),
+        ("6h", 23400, 21600, 22800, 21600),
+        ("24h", 88200, 86400, 87600, 86400),
+    ]:
+        assert before[f"active_state_duration_seconds_{window}"].item() == total
+        assert before[f"max_active_state_duration_seconds_{window}"].item() == maximum
+        assert before[f"malfunction_duration_seconds_{window}"].item() == malfunction
+        assert before[f"max_malfunction_duration_seconds_{window}"].item() == (
+            malfunction_max
+        )
+    future = state_events(
+        [5, 5, 5],
+        ["a", "b", "future-channel"],
+        ["normal"] * 3,
+        ["known_state"] * 3,
+    ).with_columns(pl.Series("event_id", ["future-a", "future-b", "future-c"]))
+    after = at_start(
+        build_feature_snapshots(pl.concat([source, future]), PipelineConfig())
+    )
+    assert_frame_equal(before, after)
+
+
+def test_state_duration_orders_same_time_changes_by_event_id_and_scopes_objects() -> (
+    None
+):
+    source = state_events(
+        [-20, -10, -10, 0],
+        ["a"] * 4,
+        ["normal", "broken", "normal", "normal"],
+        ["known_state", "malfunction", "known_state", "known_state"],
+    )
+    other = state_events(
+        [-30, 0], ["a"] * 2, ["broken"] * 2, ["malfunction"] * 2
+    ).with_columns(pl.lit("other").alias("object_id"))
+    before = at_start(
+        build_feature_snapshots(pl.concat([source, other]), PipelineConfig())
+    )
+    after = at_start(
+        build_feature_snapshots(pl.concat([source, other]).reverse(), PipelineConfig())
+    )
+    assert before["active_state_duration_seconds_30m"].to_list() == [600, 1800]
+    assert before["malfunction_duration_seconds_30m"].to_list() == [0, 1800]
+    assert_frame_equal(before, after)
+
+
+@pytest.mark.parametrize(
+    "sensor_type,prefix", [("gas", "gas"), ("heat", "temperature")]
+)
+def test_slopes_use_past_numeric_points_and_require_two_distinct_times(
+    sensor_type: str, prefix: str
+) -> None:
+    source = events([-20, -10, 0]).with_columns(
+        pl.lit(sensor_type).alias("sensor_type"),
+        pl.Series("numeric_value", [0.2, 0.4, None]),
+        pl.lit("numeric").alias("value_kind"),
+    )
+    before = at_start(build_feature_snapshots(source, PipelineConfig()))
+    assert before[f"{prefix}_slope_per_hour_30m"].item() == pytest.approx(1.2)
+    assert before[f"{prefix}_slope_per_hour_5m"].item() is None
+    future = events([5]).with_columns(
+        pl.lit(sensor_type).alias("sensor_type"),
+        pl.lit(9.0).alias("numeric_value"),
+        pl.lit("numeric").alias("value_kind"),
+    )
+    assert_frame_equal(
+        before,
+        at_start(
+            build_feature_snapshots(pl.concat([source, future]), PipelineConfig())
+        ),
+    )
+    repeated = source.with_columns(pl.lit(START).alias("registered_at"))
+    duplicate_result = at_start(build_feature_snapshots(repeated, PipelineConfig()))
+    assert duplicate_result[f"{prefix}_slope_per_hour_30m"].item() is None
+
+
+@pytest.mark.parametrize(
+    "sensor_type,prefix", [("gas", "gas"), ("heat", "temperature")]
+)
+@pytest.mark.parametrize(
+    "minutes,window", [(5, "5m"), (30, "30m"), (180, "3h"), (360, "6h"), (1440, "24h")]
+)
+def test_slope_fits_all_observations_and_excludes_the_left_boundary(
+    sensor_type: str, prefix: str, minutes: int, window: str
+) -> None:
+    source = events([-minutes, -4, -3, -3, 0]).with_columns(
+        pl.lit(sensor_type).alias("sensor_type"),
+        pl.Series("numeric_value", [1000.0, 0.0, 0.0, 4.0, 2.0]),
+        pl.lit("numeric").alias("value_kind"),
+    )
+    result = at_start(build_feature_snapshots(source, PipelineConfig()))
+    # Four observations: sum((x-x_mean)*(y-y_mean))=3, sum((x-x_mean)^2)=9.
+    # x is in minutes, so the per-hour slope is (3 / 9) * 60 = 20.
+    assert result[f"{prefix}_slope_per_hour_{window}"].item() == pytest.approx(20.0)
+
+
+def test_variability_and_entropy_are_window_local_and_future_invariant() -> None:
+    source = state_events(
+        [-20, -4, -2, -1, 0],
+        ["gas", "gas", "gas", "heat", "heat"],
+        ["10", "0", "2", "20", "24"],
+        ["numeric"] * 5,
+    ).with_columns(
+        pl.Series("sensor_type", ["gas"] * 3 + ["heat"] * 2),
+        pl.Series("numeric_value", [10.0, 0.0, 2.0, 20.0, 24.0]),
+    )
+    before = at_start(build_feature_snapshots(source, PipelineConfig()))
+    assert before["gas_variability_5m"].item() == pytest.approx(2**0.5)
+    for window in ["30m", "3h", "6h", "24h"]:
+        assert before[f"gas_variability_{window}"].item() == pytest.approx(28**0.5)
+        assert before[f"state_entropy_{window}"].item() == pytest.approx(2.3219280949)
+    for window in ["5m", "30m", "3h", "6h", "24h"]:
+        assert before[f"temperature_variability_{window}"].item() == pytest.approx(
+            8**0.5
+        )
+    assert before["state_entropy_5m"].item() == 2.0
+    future = source.tail(1).with_columns(
+        pl.lit(START + timedelta(minutes=1)).alias("registered_at"),
+        pl.lit("future").alias("event_id"),
+        pl.lit("new").alias("raw_value"),
+        pl.lit(1000.0).alias("numeric_value"),
+    )
+    assert_frame_equal(
+        before,
+        at_start(
+            build_feature_snapshots(pl.concat([source, future]), PipelineConfig())
+        ),
+    )
+
+
+def test_entropy_counts_channel_value_pairs_and_empty_windows_are_null() -> None:
+    source = state_events(
+        [-20, -10, -10, -9, 0],
+        ["a", "a", "a", "b", "b"],
+        ["old", "same", "same", "same", "same"],
+        ["known_state"] * 5,
+    )
+    result = build_feature_snapshots(source, PipelineConfig()).collect()
+    current = result.filter(pl.col("scoring_timestamp") == START)
+    # Frequencies 1/5, 2/5, 2/5: identical values on different channels differ.
+    assert current["state_entropy_30m"].item() == pytest.approx(1.5219280949)
+    assert current["state_entropy_5m"].item() == 0.0
+    empty = result.filter(pl.col("scoring_timestamp") == START - timedelta(minutes=15))
+    assert empty["state_entropy_5m"].item() is None
+    assert empty["gas_variability_5m"].item() is None
+    singleton = events([0]).with_columns(
+        pl.lit("gas").alias("sensor_type"), pl.lit(1.0).alias("numeric_value")
+    )
+    assert (
+        at_start(build_feature_snapshots(singleton, PipelineConfig()))[
+            "gas_variability_5m"
+        ].item()
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     "minutes,window", [(5, "5m"), (30, "30m"), (180, "3h"), (360, "6h"), (1440, "24h")]
 )

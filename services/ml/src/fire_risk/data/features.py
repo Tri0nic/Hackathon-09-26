@@ -13,6 +13,7 @@ from fire_risk.data.quality import (
 )
 
 _WINDOWS = ("5m", "30m", "3h", "6h", "24h")
+_WINDOW_SECONDS = (300, 1800, 10800, 21600, 86400)
 _KEYS = ["object_id", "scoring_timestamp"]
 _CATEGORIES = {
     "smoke": ["smoke", "датчик дыма"],
@@ -27,6 +28,8 @@ _CATEGORIES = {
 def _feature_events(events: pl.LazyFrame) -> pl.LazyFrame:
     names = events.collect_schema().names()
     optional = {
+        "event_id": pl.lit(None, dtype=pl.String),
+        "raw_value": pl.lit(None, dtype=pl.String),
         "numeric_value": pl.lit(None, dtype=pl.Float64),
         "value_kind": pl.lit(None, dtype=pl.String),
         "quality_flags": pl.lit([], dtype=pl.List(pl.String)),
@@ -90,6 +93,8 @@ def _feature_events(events: pl.LazyFrame) -> pl.LazyFrame:
         "object_id",
         "registered_at",
         "channel_id",
+        "event_id",
+        "raw_value",
         "sensor_type",
         "alarm_flag",
         pl.col("numeric_value").cast(pl.Float64),
@@ -110,12 +115,88 @@ def _feature_events(events: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
+def _duration_features(source: pl.LazyFrame, grid: pl.LazyFrame) -> pl.LazyFrame:
+    """Carry each channel's current raw state, including normal states, to t.
+
+    Repeated observations retain the run start. Channels without a raw state
+    observed by t contribute zero; only current malfunction states contribute
+    to malfunction durations.
+    """
+    channel_keys = ["object_id", "channel_id"]
+    states = (
+        source.filter(pl.col("raw_value").is_not_null())
+        .sort([*channel_keys, "registered_at", "event_id"])
+        .with_columns(
+            pl.when(
+                pl.col("raw_value").ne_missing(
+                    pl.col("raw_value").shift().over(channel_keys)
+                )
+            )
+            .then(pl.col("registered_at"))
+            .alias("_changed_at")
+        )
+        .with_columns(pl.col("_changed_at").forward_fill().over(channel_keys))
+        .select(*channel_keys, "registered_at", "_changed_at", "value_kind")
+    )
+    channel_grid = grid.join(
+        source.select(channel_keys).unique(), on="object_id", how="left"
+    ).sort([*channel_keys, "registered_at"])
+    durations = channel_grid.join_asof(
+        states,
+        on="registered_at",
+        by=channel_keys,
+        strategy="backward",
+        check_sortedness=False,
+    ).with_columns(
+        (
+            (pl.col("registered_at") - pl.col("_changed_at")).dt.total_microseconds()
+            / 1_000_000
+        )
+        .fill_null(0.0)
+        .alias("_duration")
+    )
+    expressions = []
+    for window, seconds in zip(_WINDOWS, _WINDOW_SECONDS, strict=True):
+        active = pl.col("_duration").clip(upper_bound=seconds)
+        malfunction = (
+            pl.when(pl.col("value_kind") == "malfunction").then(active).otherwise(0.0)
+        )
+        expressions.extend(
+            [
+                active.sum().alias(f"active_state_duration_seconds_{window}"),
+                active.max().alias(f"max_active_state_duration_seconds_{window}"),
+                malfunction.sum().alias(f"malfunction_duration_seconds_{window}"),
+                malfunction.max().alias(f"max_malfunction_duration_seconds_{window}"),
+            ]
+        )
+    return (
+        durations.group_by("object_id", "registered_at")
+        .agg(expressions)
+        .rename({"registered_at": "scoring_timestamp"})
+    )
+
+
+def _slope(signal: pl.Expr) -> pl.Expr:
+    numeric = signal & pl.col("numeric_value").is_not_null()
+    timestamps = pl.col("registered_at").filter(numeric)
+    # Center before conversion to float to preserve short time differences.
+    hours = (timestamps - timestamps.min()).dt.total_microseconds() / 3_600_000_000
+    values = pl.col("numeric_value").filter(numeric)
+    variance = hours.var(ddof=0)
+    return (
+        pl.when((timestamps.n_unique() >= 2) & (variance > 0))
+        .then(pl.cov(hours, values, ddof=0) / variance)
+        .otherwise(pl.lit(None, dtype=pl.Float64))
+    )
+
+
 def _window_features(window: str, config: PipelineConfig) -> list[pl.Expr]:
     event = pl.col("_event").fill_null(False)
     alarm = event & pl.col("alarm_flag").fill_null(False)
     gas = event & pl.col("_gas")
     heat = event & pl.col("_heat")
     smoke_alarm = (alarm & pl.col("_smoke")).any()
+    observed_state = event & pl.col("raw_value").is_not_null()
     expressions = {
         "event_count": event.sum().cast(pl.Int64),
         "alarm_count": alarm.sum().cast(pl.Int64),
@@ -141,6 +222,19 @@ def _window_features(window: str, config: PipelineConfig) -> list[pl.Expr]:
         .cast(pl.Int64),
         "temperature_max": pl.col("numeric_value").filter(heat).max(),
         "temperature_mean": pl.col("numeric_value").filter(heat).mean(),
+        "gas_slope_per_hour": _slope(gas),
+        "temperature_slope_per_hour": _slope(heat),
+        "gas_variability": pl.col("numeric_value").filter(gas).std(ddof=1),
+        "temperature_variability": pl.col("numeric_value").filter(heat).std(ddof=1),
+        "state_entropy": pl.when(observed_state.any())
+        .then(
+            pl.struct("channel_id", "raw_value")
+            .filter(observed_state)
+            .value_counts()
+            .struct.field("count")
+            .entropy(base=2, normalize=True)
+        )
+        .otherwise(pl.lit(None, dtype=pl.Float64)),
         **{
             f"{flag}_count": (event & pl.col(flag)).sum().cast(pl.Int64)
             for flag in ("stuck", "burst", "historical_artifact")
@@ -163,6 +257,8 @@ def build_feature_snapshots(
     null numeric summaries. Baselines average observed, eligible completed
     days; stuck and historical/corrupted intervals are omitted. Weekday uses
     ISO numbering (Monday = 1).
+    Current-state durations are summed/maximized after clipping each channel
+    independently. Missing raw history gives zero duration and null entropy.
     Causal quality is rebuilt from raw event history at this boundary. Without
     raw values/event IDs, unverifiable technical flags default to zero; existing
     exclusion annotations can only exclude completed days from the baseline.
@@ -199,7 +295,9 @@ def build_feature_snapshots(
     timeline = pl.concat([source, markers], how="diagonal").sort(
         ["object_id", "registered_at", "_snapshot"]
     )
-    result = grid.rename({"registered_at": "scoring_timestamp"})
+    result = grid.rename({"registered_at": "scoring_timestamp"}).join(
+        _duration_features(source, grid), on=_KEYS, how="left"
+    )
     for window in _WINDOWS:
         rolled = (
             timeline.rolling(
