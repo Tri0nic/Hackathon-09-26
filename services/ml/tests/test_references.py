@@ -114,6 +114,20 @@ def test_alarm_tokens_normalize_strictly(tmp_path: Path) -> None:
     assert flags == {"a": True, "b": True, "c": True, "d": False, "e": False, "g": False}
 
 
+@pytest.mark.parametrize("rows", ["T,1,Норма,\n", "T,1,Норма,false\nT,2,Норма,\n"])
+def test_blank_alarm_flag_is_rejected_before_state_grouping(
+    tmp_path: Path, rows: str
+) -> None:
+    path = tmp_path / "blank-alarm.csv"
+    path.write_text(
+        "sensor_type,state_set_id,state_name,alarm_flag\n" + rows,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ReferenceIntegrityError, match="alarm_flag"):
+        scan_state_reference(path).collect()
+
+
 def events_fixture() -> pl.LazyFrame:
     return pl.LazyFrame(
         {

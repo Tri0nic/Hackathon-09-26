@@ -97,9 +97,26 @@ def scan_state_reference(path: Path) -> pl.LazyFrame:
     """Read, normalize, and consolidate state-reference mappings."""
     columns = _reference_columns(path, STATE_RU_TO_CANONICAL)
     alarm_tokens = {"true": True, "t": True, "1": True, "false": False, "f": False, "0": False}
+    reference = pl.scan_csv(path, infer_schema=False).select(
+        [pl.col(source).alias(target) for source, target in columns.items()]
+    )
+    invalid_alarm_values = (
+        reference.select("alarm_flag")
+        .filter(
+            pl.col("alarm_flag").is_null()
+            | ~pl.col("alarm_flag").str.to_lowercase().is_in(list(alarm_tokens))
+        )
+        .unique()
+        .collect()["alarm_flag"]
+        .to_list()
+    )
+    if invalid_alarm_values:
+        raise ReferenceIntegrityError(
+            f"Invalid alarm_flag values in {path}: {invalid_alarm_values}; "
+            "expected true/t/1 or false/f/0"
+        )
     return (
-        pl.scan_csv(path, infer_schema=False)
-        .select([pl.col(source).alias(target) for source, target in columns.items()])
+        reference
         .with_columns(
             pl.col("state_set_id").cast(pl.String),
             pl.col("alarm_flag")
