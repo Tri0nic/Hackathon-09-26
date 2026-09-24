@@ -1,7 +1,12 @@
-"""Read event journals without materializing the source CSV files."""
+"""Sanitize event journals to disk with bounded Python memory, then scan lazily."""
 
+import atexit
 import csv
+from collections.abc import Iterator
+from functools import cache
 from pathlib import Path
+from tempfile import NamedTemporaryFile, TemporaryDirectory
+from typing import TextIO
 
 import polars as pl
 
@@ -21,54 +26,159 @@ _CANONICAL_FIELDS = (
     "raw_value",
     "source_year",
 )
+_MAX_RECORD_CHARS = 1_048_576
 
 
-def _preflight_shapes(path: Path) -> list[tuple[int, str]]:
-    """Stream CSV records, retaining only ragged-record indices and reasons."""
-    malformed: list[tuple[int, str]] = []
+class _RecordTooLarge(Exception):
+    pass
+
+
+class _RecordLines(Iterator[str]):
+    """Bound one csv.reader call and remember where recovery should resume."""
+
+    def __init__(self, handle: TextIO) -> None:
+        self.handle = handle
+        self.first_line: str | None = None
+        self.next_record_position = 0
+        self.consumed = 0
+        self.quote_state = "start"
+
+    def __next__(self) -> str:
+        line = self.handle.readline(_MAX_RECORD_CHARS - self.consumed + 1)
+        if not line:
+            raise StopIteration
+        first = self.first_line is None
+        if first:
+            self.first_line = line
+        self.consumed += len(line)
+        if self.consumed > _MAX_RECORD_CHARS:
+            # readline(size) may stop inside a physical line. Drain it in fixed
+            # chunks, never handing a partial line to the CSV parser.
+            while line and not line.endswith(("\n", "\r")):
+                line = self.handle.readline(65_536)
+            if line.endswith("\r"):
+                position = self.handle.tell()
+                if self.handle.read(1) != "\n":
+                    self.handle.seek(position)
+            if first:
+                self.next_record_position = self.handle.tell()
+            raise _RecordTooLarge
+        if first:
+            self.next_record_position = self.handle.tell()
+        # csv.reader(strict=True) permits quotes inside unquoted fields. RFC4180
+        # does not, so validate quote boundaries as well as its parser errors.
+        for char in line:
+            if self.quote_state == "quoted":
+                if char == '"':
+                    self.quote_state = "closed"
+            elif self.quote_state == "closed":
+                if char == '"':
+                    self.quote_state = "quoted"
+                elif char in ",\r\n":
+                    self.quote_state = "start"
+                else:
+                    raise csv.Error("characters after a closing quote")
+            elif char == '"':
+                if self.quote_state != "start":
+                    raise csv.Error("quote inside an unquoted field")
+                self.quote_state = "quoted"
+            elif char in ",\r\n":
+                self.quote_state = "start"
+            else:
+                self.quote_state = "unquoted"
+        return line
+
+
+def _read_record(handle: TextIO) -> tuple[list[str], str | None] | None:
+    lines = _RecordLines(handle)
+    try:
+        row = next(csv.reader(lines, strict=True), None)
+        return None if row is None else (row, None)
+    except (csv.Error, _RecordTooLarge) as error:
+        reason = (
+            "record_too_large"
+            if isinstance(error, _RecordTooLarge) or "field larger" in str(error)
+            else "invalid_csv_quoting"
+        )
+        # An unfinished quote may have consumed neighboring physical lines.
+        # Retry from the first line after the malformed record, preserving valid
+        # multiline records whenever strict parsing succeeds.
+        handle.seek(lines.next_record_position)
+        try:
+            row = next(csv.reader([lines.first_line or ""]), [])
+        except csv.Error:
+            row = []
+        return row, reason
+
+
+@cache
+def _spool_directory() -> Path:
+    directory = TemporaryDirectory(prefix="fire-risk-csv-")
+    # LazyFrame transformations/clones do not retain arbitrary Python owners.
+    # Keep the owner alive until normal process exit, then remove every spool.
+    atexit.register(directory.cleanup)
+    return Path(directory.name)
+
+
+def _sanitize_csv(path: Path) -> Path:
+    """Write one row at a time; no collection grows with good or bad row count."""
     with path.open(encoding="utf-8-sig", newline="") as handle:
-        reader = csv.reader(handle)
-        header = next(reader, [])
-        if not set(_REQUIRED_FIELDS).issubset(header) or len(set(header)) != len(
-            header
+        record = _read_record(handle)
+        header, header_error = record if record is not None else ([], None)
+        if (
+            header_error
+            or not set(_REQUIRED_FIELDS).issubset(header)
+            or len(set(header)) != len(header)
         ):
-            raise ValueError(f"{path}: missing or duplicate required CSV columns")
-        for index, row in enumerate(reader):
-            if len(row) != len(header):
-                malformed.append(
-                    (
-                        index,
-                        "too_few_fields" if len(row) < len(header) else "extra_fields",
+            raise ValueError(f"{path}: missing, duplicate or malformed CSV columns")
+        positions = [header.index(field) for field in _REQUIRED_FIELDS]
+        with NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            suffix=".csv",
+            dir=_spool_directory(),
+            delete=False,
+        ) as output:
+            spool = Path(output.name)
+            try:
+                writer = csv.writer(output)
+                writer.writerow([*_REQUIRED_FIELDS, "_shape_reason", "_source_index"])
+                index = 0
+                while (record := _read_record(handle)) is not None:
+                    row, reason = record
+                    if reason is None and len(row) != len(header):
+                        reason = (
+                            "too_few_fields"
+                            if len(row) < len(header)
+                            else "extra_fields"
+                        )
+                    writer.writerow(
+                        [
+                            *[
+                                row[pos] if pos < len(row) else None
+                                for pos in positions
+                            ],
+                            reason,
+                            index,
+                        ]
                     )
-                )
-    return malformed
+                    index += 1
+            except BaseException:
+                output.close()
+                spool.unlink(missing_ok=True)
+                raise
+    return spool
 
 
 def _scan_annotated(path: Path) -> pl.LazyFrame:
-    malformed = _preflight_shapes(path)
-    # Truncation is safe only with the independent shape audit: extra cells
-    # cannot abort the scan, and their records are always quarantined below.
     source = pl.scan_csv(
-        path,
+        _sanitize_csv(path),
         encoding="utf8",
         infer_schema=False,
-        truncate_ragged_lines=True,
-        row_index_name="_source_index",
+        schema_overrides={"_source_index": pl.UInt64},
         raise_if_empty=False,
     )
-    if malformed:
-        shapes = pl.DataFrame(
-            malformed,
-            schema={"_source_index": pl.get_index_type(), "_shape_reason": pl.String},
-            orient="row",
-        )
-        source = source.join(
-            shapes.lazy(), on="_source_index", how="left", maintain_order="left"
-        )
-    else:
-        source = source.with_columns(
-            pl.lit(None, dtype=pl.String).alias("_shape_reason")
-        )
     registered_at = pl.concat_str(
         [pl.col("дата"), pl.col("время")], separator=" "
     ).str.strptime(pl.Datetime, format="%Y-%m-%d %H:%M:%S", strict=False)
@@ -109,10 +219,11 @@ def scan_events(paths: list[Path]) -> pl.LazyFrame:
 def partition_events(paths: list[Path]) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """Return valid rows and explicit row-level quarantine with source identity.
 
-    A streaming structural preflight stores only malformed record indices.
-    Field/value validation and subsequent event processing remain lazy.
+    Streaming sanitation uses a bounded record buffer and process-owned OS-temp
+    files, removed at normal exit. Field validation and both partitions are lazy.
     source_row counts logical CSV records including the header, not physical
-    lines when quoted values span lines.
+    lines when quoted values span lines. On quote/size errors, recovery treats
+    the first physical line as the malformed record and retries its neighbors.
     """
     events = pl.concat([_scan_annotated(path) for path in paths])
     valid = events.filter(pl.col("quality_reason").is_null()).drop("quality_reason")

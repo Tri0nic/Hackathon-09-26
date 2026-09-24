@@ -221,7 +221,9 @@ def test_methane_threshold_participates_in_episode_alarm_composition_and_proxy_l
         assert labels["source"].item() == "proxy"
 
 
-def test_cli_reports_malformed_required_values_and_ragged_rows(tmp_path: Path) -> None:
+def test_cli_reports_malformed_required_values_ragged_rows_and_quotes(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "malformed.csv"
     source.write_text(
         "ид_события,ид_канала_данных,дата,время,тревожное,значение_датчика\n"
@@ -229,7 +231,9 @@ def test_cli_reports_malformed_required_values_and_ragged_rows(tmp_path: Path) -
         "2,001,2024-01-03,00:01:00,f,\n"
         "3,001,2024-01-03,00:02:00,f\n"
         "4,001,2024-01-03,00:03:00,f,20,extra\n"
-        "5,001,2024-01-03,00:04:00,f,Норма\n",
+        '5,001,2024-01-03,00:04:00,f,"20"oops\n'
+        '6,001,2024-01-03,00:05:00,f,"unfinished\n'
+        "7,001,2024-01-03,00:06:00,f,Норма\n",
         encoding="utf-8",
     )
     result = RUNNER.invoke(app, prepare_args(tmp_path / "out", source))
@@ -237,15 +241,40 @@ def test_cli_reports_malformed_required_values_and_ragged_rows(tmp_path: Path) -
     directory = tmp_path / "out" / "test-run"
     assert pl.read_parquet(directory / "normalized_events.parquet")[
         "event_id"
-    ].to_list() == ["1", "5"]
+    ].to_list() == ["1", "7"]
     quality = json.loads((directory / "quality_report.json").read_text())
-    assert quality["quarantined_rows"] == 3
+    assert quality["quarantined_rows"] == 5
     assert quality["invalid_timestamp_rows"] == 0
-    assert quality["malformed_input_rows"] == 3
+    assert quality["malformed_input_rows"] == 5
     assert quality["input_quality_reasons"] == {
         "missing_raw_value": 1,
         "too_few_fields": 1,
         "extra_fields": 1,
+        "invalid_csv_quoting": 2,
+    }
+
+
+def test_cli_can_prepare_an_entirely_quarantined_journal(tmp_path: Path) -> None:
+    source = tmp_path / "all-bad.csv"
+    source.write_text(
+        "ид_события,ид_канала_данных,дата,время,тревожное,значение_датчика\n"
+        "1,001,2024-01-03,00:00:00,f,20,extra\n"
+        "2,001,2024-01-03,00:01:00,f,\n"
+        '3,001,2024-01-03,00:02:00,f,"20"oops\n',
+        encoding="utf-8",
+    )
+
+    result = RUNNER.invoke(app, prepare_args(tmp_path / "out", source))
+
+    assert result.exit_code == 0, result.output + str(result.exception)
+    directory = tmp_path / "out" / "test-run"
+    assert pl.read_parquet(directory / "normalized_events.parquet").height == 0
+    quality = json.loads((directory / "quality_report.json").read_text())
+    assert quality["malformed_input_rows"] == 3
+    assert quality["input_quality_reasons"] == {
+        "extra_fields": 1,
+        "missing_raw_value": 1,
+        "invalid_csv_quoting": 1,
     }
 
 

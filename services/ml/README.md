@@ -113,13 +113,18 @@ quality thresholds, and proxy rule version are recorded in the manifest.
   manifest.json
 ```
 
-The pipeline streams a CSV structure preflight, retaining only malformed-record
-indices and reasons, then scans journals lazily, joins references, normalizes values and
+The pipeline sanitizes CSV records one at a time into process-owned OS temporary
+files, then scans those files lazily, joins references, normalizes values and
 pickets, attaches deterministic device-age estimates, profiles quality, builds
 episodes/membership, emits proxy labels in batches, and attaches targets to
 feature snapshots. Parquet files are explicit output boundaries; subsequent
-stages rescan them. Only small references, malformed-record metadata and aggregate
-JSON reports are held eagerly; no event journal is converted to a Python list. Proxy label records are
+stages rescan them. Sanitation retains one bounded CSV record, with no collection
+growing with the number of valid or malformed rows. Temporary backing remains
+available for repeated or derived LazyFrame collections until normal process
+exit, when the entire temporary directory is removed. Disk space scales with
+input size; abrupt process termination can leave temporary files for OS cleanup.
+Only small references and aggregate JSON reports are held eagerly; no event journal
+is converted to a Python list. Proxy label records are
 converted in batches of at most 10,000 episodes inside Polars output processing.
 Numeric methane readings at or above the configured threshold set the resolved
 `alarm_flag` consumed by episodes and proxy labels, even if the source flag was
@@ -193,10 +198,18 @@ in the design are not implemented in this foundation's minimum feature contract.
 Quality reports explicitly count malformed timestamps, other malformed input
 rows by reason, unknown channels, conflicting mappings, and quarantined rows.
 Missing required identifiers/date/time/alarm/value fields, invalid alarm flags,
-invalid timestamps and too few/extra CSV fields enter the bad LazyFrame with an
-explicit `quality_reason`, `source_file` and `source_row`. Row numbers count
+invalid timestamps, too few/extra CSV fields and malformed quotes enter the bad
+LazyFrame with an explicit `quality_reason`, `source_file` and `source_row`. Row numbers count
 logical CSV records including the header, not physical lines inside quoted
-multiline values. Malformed rows are omitted from normalized output without
+multiline values. Quoted commas, escaped quotes and valid quoted multiline values
+are preserved. Malformed quoting receives `invalid_csv_quoting`; records exceeding
+the 1,048,576-character read budget or Python CSV's field-size limit receive
+`record_too_large`. After either parser error, the first physical line is
+quarantined and parsing resumes at the following physical line, so an unfinished
+quote cannot consume valid neighboring records. Like any CSV reader, a sequence
+that is syntactically a valid multiline field is treated as such. Source identity
+is the pair `(source_file, source_row)`, including when multiple input files reuse
+event IDs. Malformed rows are omitted from normalized output without
 discarding valid neighbors; original CSVs retain them. Historical 2021 artifacts
 remain normalized with exclusion flags and are omitted from proxy fire labels.
 Device ages are first-observation estimates or marked `generated_demo`/
