@@ -276,6 +276,10 @@ def _attach_device_metadata(
         )
         .select("channel_id", "_device")
         .unnest("_device")
+        # Resolve one row per channel before probing the event stream; a shared
+        # source multiplexer would otherwise retain events during aggregation.
+        .collect(engine="streaming")
+        .lazy()
     )
     return events.join(metadata, on="channel_id", how="left")
 
@@ -715,7 +719,9 @@ def run_full(config: FullRunConfig) -> RunResult:
             if train:
                 # Do not derive calibration membership from any proposed or
                 # static quality cutoffs. No established exclusions are supplied.
-                profiles = profile_channel_days(normalized_input(train)).with_columns(
+                profiles = profile_channel_days(
+                    normalized_input(train), temp_dir=temp / "train-profiles"
+                ).with_columns(
                     pl.lit(False).alias("historical_artifact"),
                     pl.lit(False).alias("exclude_from_fire_training"),
                 )
@@ -780,11 +786,18 @@ def run_full(config: FullRunConfig) -> RunResult:
 
         def write_normalized(path: Path) -> None:
             normalized = normalized_input(journals)
+            # This post-freeze profile pass cannot feed stage 20. Persist compact
+            # profiles before joining flags to avoid buffering the event probe
+            # while a shared full-corpus aggregation waits to finish.
+            application_profile_path = temp / "application-profiles.parquet"
+            profile_channel_days(
+                normalized, temp_dir=temp / "application-profiles"
+            ).sink_parquet(application_profile_path)
             normalized = _attach_device_metadata(
                 normalized, DeviceAgeConfig(as_of=config.device_as_of), config.seed
             )
             normalized = mark_historical_artifacts(
-                normalized, profile_channel_days(normalized), thresholds
+                normalized, pl.scan_parquet(application_profile_path), thresholds
             )
             normalized.with_columns(
                 pl.col("registered_at").dt.convert_time_zone("UTC")
@@ -878,20 +891,33 @@ def run_full(config: FullRunConfig) -> RunResult:
             {"run_identity": run_identity},
             lambda path: _write_json(
                 path,
-                build_full_run_report(
-                    normalized,
-                    partitions(journals)[1],
-                    pl.scan_parquet(label_path),
-                    pl.scan_parquet(feature_path),
-                    coverage=coverage,
-                    quality=quality,
-                    calibration=calibration.to_dict(),
-                    source_hashes=before,
-                    source_timezone=config.source_timezone,
-                    seed=config.seed,
-                    implementation_revision=config.implementation_revision or "unknown",
-                    run_identity=run_identity,
-                ),
+                {
+                    **build_full_run_report(
+                        normalized,
+                        partitions(journals)[1],
+                        pl.scan_parquet(label_path),
+                        pl.scan_parquet(feature_path),
+                        coverage=coverage,
+                        quality=quality,
+                        calibration=calibration.to_dict(),
+                        source_hashes=before,
+                        source_timezone=config.source_timezone,
+                        seed=config.seed,
+                        implementation_revision=config.implementation_revision
+                        or "unknown",
+                        run_identity=run_identity,
+                    ),
+                    "profile_passes": {
+                        "calibration_source_years": sorted(
+                            {_journal_year(path) for path in train}
+                        ),
+                        "application_source_years": sorted(
+                            {_journal_year(path) for path in journals}
+                        ),
+                        "application_uses_frozen_thresholds": True,
+                        "event_partition": "source_timezone_month_then_day",
+                    },
+                },
             ),
         )
         after = {str(path): sha256_file(path) for path in sources}

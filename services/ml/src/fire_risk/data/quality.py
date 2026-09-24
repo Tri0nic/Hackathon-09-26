@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 from math import isfinite
+from pathlib import Path
+from tempfile import mkdtemp
 from typing import ClassVar
 
 import polars as pl
@@ -34,8 +36,57 @@ class QualityThresholds:
         object.__setattr__(self, "max_event_rate_deviation", float(rate))
 
 
-def profile_channel_days(events: pl.LazyFrame) -> pl.LazyFrame:
-    """Summarize each channel/day against its preceding channel-day history."""
+def profile_channel_days(
+    events: pl.LazyFrame, *, temp_dir: Path | None = None
+) -> pl.LazyFrame:
+    """Summarize channel-days, optionally bounding event windows to one local day.
+
+    The caller owns ``temp_dir`` and must retain it until the returned lazy frame
+    is consumed. Only compact daily rows participate in the historical window.
+    """
+    if temp_dir is None:
+        return _profile_history(_daily_profiles(events))
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    root = Path(mkdtemp(prefix="profiles-", dir=temp_dir))
+    columns = ["channel_id", "registered_at", "event_id", "alarm_flag", "raw_value"]
+    if "source_year" in events.collect_schema().names():
+        columns.append("source_year")
+    # Two-level partitioning limits simultaneous writers (months, then <=31
+    # days), unlike opening thousands of day partitions in a single sink.
+    events.select(columns).sink_parquet(
+        pl.PartitionByKey(
+            root / "months",
+            by={"_profile_month": pl.col("registered_at").dt.strftime("%Y-%m")},
+            include_key=False,
+        ),
+        mkdir=True,
+    )
+    daily = root / "daily"
+    daily.mkdir()
+    count = 0
+    for month_index, month in enumerate(sorted((root / "months").glob("*"))):
+        days = root / "days" / str(month_index)
+        pl.scan_parquet(month / "*.parquet", hive_partitioning=False).sink_parquet(
+            pl.PartitionByKey(
+                days,
+                by={"_profile_day": pl.col("registered_at").dt.date()},
+                include_key=False,
+            ),
+            mkdir=True,
+        )
+        for day in sorted(days.glob("*")):
+            # A whole channel-day (across all input batches/journals) stays
+            # together, so state runs and repeated seconds need no stitching.
+            _daily_profiles(
+                pl.scan_parquet(day / "*.parquet", hive_partitioning=False)
+            ).sink_parquet(daily / f"{count:06}.parquet")
+            count += 1
+    if not count:
+        _daily_profiles(events.limit(0)).sink_parquet(daily / "000000.parquet")
+    return _profile_history(pl.scan_parquet(daily / "*.parquet"))
+
+
+def _daily_profiles(events: pl.LazyFrame) -> pl.LazyFrame:
     keys = ["channel_id", "day"]
     if "source_year" in events.collect_schema().names():
         keys.append("source_year")
@@ -68,10 +119,16 @@ def profile_channel_days(events: pl.LazyFrame) -> pl.LazyFrame:
         .agg(pl.col("_run_length").max().alias("longest_identical_state_run"))
     )
     profiles = counts.join(repeats, on=keys).join(runs, on=keys)
-    profiles = profiles.with_columns(
+    return profiles.with_columns(
         (pl.col("alarm_count") / pl.col("event_count")).alias("alarm_share")
-    ).sort(keys)
-    profiles = profiles.with_columns(
+    )
+
+
+def _profile_history(profiles: pl.LazyFrame) -> pl.LazyFrame:
+    keys = ["channel_id", "day"]
+    if "source_year" in profiles.collect_schema().names():
+        keys.append("source_year")
+    profiles = profiles.sort(keys).with_columns(
         pl.col("event_count")
         .shift(1)
         .rolling_median(window_size=30, min_samples=1)

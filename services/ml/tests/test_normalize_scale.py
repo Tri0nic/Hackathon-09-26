@@ -1,5 +1,6 @@
 """Normalization semantics and cardinality-bound Python execution."""
 
+from datetime import UTC, date, datetime
 from pathlib import Path
 from time import perf_counter
 
@@ -250,3 +251,46 @@ def test_disk_backed_lookup_joins_are_streaming_and_lookup_keys_unique(
     assert "in-memory-join" not in physical, physical
     assert physical.count("equi-join") == 2, physical
     assert "multiplexer" not in physical, physical
+
+
+def test_device_metadata_joins_compact_lookup_without_buffering_events(tmp_path):
+    from fire_risk.data.device_metadata import DeviceAgeConfig
+
+    reference = pl.read_csv(
+        Path(__file__).parent / "fixtures" / "channels.csv", infer_schema=False
+    ).head(1)
+    source = pl.concat([reference] * 3).with_columns(
+        pl.Series(
+            "registered_at",
+            [
+                datetime(2021, 1, 1, tzinfo=UTC),
+                datetime(2020, 1, 1, tzinfo=UTC),
+                datetime(2022, 1, 1, tzinfo=UTC),
+            ],
+        ),
+        pl.Series("event_id", ["later", "first", "unknown"]),
+        pl.Series("object_id", ["object-1", "object-1", None]),
+        pl.Series("channel_id", ["001", "001", "missing"]),
+    )
+    path = tmp_path / "device-events.parquet"
+    source.write_parquet(path, row_group_size=1)
+    result = pipeline._attach_device_metadata(
+        pl.scan_parquet(path), DeviceAgeConfig(), 42
+    )
+    actual = result.sort("event_id").collect()
+    assert actual["estimated_install_date"].to_list() == [
+        date(2020, 1, 1),
+        date(2020, 1, 1),
+        None,
+    ]
+    assert actual["estimated_age_years"].to_list() == [6.7, 6.7, None]
+    assert actual["age_source"].to_list() == ["first_seen", "first_seen", None]
+    assert actual["is_synthetic"].to_list() == [False, False, None]
+    assert actual.select(source.columns).equals(source.sort("event_id"))
+    physical = result.show_graph(
+        show=False, raw_output=True, engine="streaming", plan_stage="physical"
+    )
+    assert physical is not None
+    assert "multiplexer" not in physical, physical
+    assert "in-memory-join" not in physical, physical
+    assert physical.count("equi-join") == 1, physical

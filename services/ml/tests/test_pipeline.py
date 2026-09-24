@@ -219,6 +219,36 @@ def test_full_run_train_only_frozen_and_complete(pipeline, full_config):
         )
 
 
+def test_full_run_profiles_are_bounded_and_post_freeze_is_isolated(
+    pipeline, full_config, monkeypatch
+):
+    original = pipeline.profile_channel_days
+    observed = []
+
+    def profile(events, *, temp_dir=None):
+        assert temp_dir is not None, (
+            "Full runs must bound event windows to daily spools"
+        )
+        years = sorted(events.select("source_year").unique().collect()["source_year"])
+        frozen = full_config.output / full_config.run_id / STAGES[2]
+        observed.append((years, frozen.exists()))
+        return original(events, temp_dir=temp_dir)
+
+    monkeypatch.setattr(pipeline, "profile_channel_days", profile)
+    result = pipeline.run_full(full_config)
+    assert observed == [
+        (list(range(2019, 2025)), False),
+        (list(range(2019, 2027)), True),
+    ]
+    report = json.loads((result.directory / "72-run-report.json").read_text())
+    assert report["profile_passes"] == {
+        "calibration_source_years": list(range(2019, 2025)),
+        "application_source_years": list(range(2019, 2027)),
+        "application_uses_frozen_thresholds": True,
+        "event_partition": "source_timezone_month_then_day",
+    }
+
+
 def test_resume_is_deterministic_and_downstream_changes_reuse_profiles(
     pipeline, full_config
 ):
