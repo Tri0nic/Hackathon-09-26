@@ -193,10 +193,10 @@ def test_python_work_is_bounded_by_distinct_values_and_names(
         },
         schema_overrides={"quality_flags": pl.List(pl.String)},
     )
+    started = perf_counter()
     lazy = pipeline._normalize_events(source.lazy(), state_file, PipelineConfig())
     if project:
         lazy = lazy.select("alarm_flag")
-    started = perf_counter()
     actual = lazy.collect(engine="streaming")
     elapsed = perf_counter() - started
     assert actual.height == count
@@ -208,3 +208,45 @@ def test_python_work_is_bounded_by_distinct_values_and_names(
     print(
         f"Repeated-value normalization: {actual.height / elapsed:.0f} rows/s; {calls}"
     )
+
+
+def test_disk_backed_lookup_joins_are_streaming_and_lookup_keys_unique(
+    tmp_path, state_file, monkeypatch
+):
+    source = pl.DataFrame(
+        {
+            "sensor_type": ["smoke", "smoke", "heat", None] * 5,
+            "raw_value": ["normal", "alarm", "25", None] * 5,
+            "sensor_name": ["ПК 12", None] * 10,
+            "alarm_flag": [False] * 20,
+            "quality_flags": [[]] * 20,
+        },
+        schema_overrides={"quality_flags": pl.List(pl.String)},
+    )
+    disk = tmp_path / "events.parquet"
+    source.write_parquet(disk)
+    right_tables = []
+    join = pl.LazyFrame.join
+
+    def observe_join(self, other, **kwargs):
+        right_tables.append((kwargs["on"], other.collect(engine="streaming")))
+        return join(self, other, **kwargs)
+
+    monkeypatch.setattr(pl.LazyFrame, "join", observe_join)
+    result = pipeline._normalize_events(
+        pl.scan_parquet(disk), state_file, PipelineConfig()
+    )
+    assert len(right_tables) == 2
+    for keys, table in right_tables:
+        assert table.select(pl.struct(keys).n_unique()).item() == table.height
+    assert right_tables[0][1].height == 4
+    assert right_tables[0][1]["sensor_type"].null_count() == 1
+    assert right_tables[1][1].height == 2
+    assert right_tables[1][1]["sensor_name"].null_count() == 1
+    physical = result.show_graph(
+        show=False, raw_output=True, plan_stage="physical", engine="streaming"
+    )
+    assert physical is not None
+    assert "in-memory-join" not in physical, physical
+    assert physical.count("equi-join") == 2, physical
+    assert "multiplexer" not in physical, physical

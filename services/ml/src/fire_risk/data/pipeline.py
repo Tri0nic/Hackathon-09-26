@@ -186,9 +186,10 @@ def _normalize_events(
             "location_group": picket.location_group,
         }
 
-    # Distinct precedes each Python expression in the lazy plan. Event volume
-    # stays in native streaming joins; only value/name cardinality reaches
-    # Python, and no complete event frame is materialized here.
+    # Materialize only distinct lookups through the streaming engine. Keeping
+    # these branches in the event query lets common-subplan reuse multiplex the
+    # entire source while joins wait for their lookup builds to finish. Resolve
+    # the small cardinality-bound tables first, then stream the event side once.
     value_keys = ["sensor_type", "raw_value"]
     values = (
         events.select(value_keys)
@@ -199,6 +200,8 @@ def _normalize_events(
             .alias("_normalized")
         )
         .unnest("_normalized")
+        .collect(engine="streaming")
+        .lazy()
     )
     locations = (
         events.select("sensor_name")
@@ -209,14 +212,17 @@ def _normalize_events(
             .alias("_picket")
         )
         .unnest("_picket")
+        .collect(engine="streaming")
+        .lazy()
     )
     return (
+        # Both right sides are unique by construction. Explicit m:1 validation
+        # forces an in-memory join in Polars 1.33; retain streaming equi-joins.
         events.join(
             values,
             on=value_keys,
             how="left",
             nulls_equal=True,
-            validate="m:1",
             maintain_order="left",
         )
         .join(
@@ -224,7 +230,6 @@ def _normalize_events(
             on="sensor_name",
             how="left",
             nulls_equal=True,
-            validate="m:1",
             maintain_order="left",
         )
         .with_columns(
