@@ -43,6 +43,14 @@ class StateReference(BaseModel):
     alarm_flag: bool
 
 
+class StateMapping(BaseModel):
+    sensor_type: str
+    state_name: str
+    alarm_flag: bool | None
+    state_set_ids: list[str]
+    is_conflicting: bool
+
+
 class SensorEventNormalized(BaseModel):
     event_id: str
     channel_id: str

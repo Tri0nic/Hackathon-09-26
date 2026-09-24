@@ -89,7 +89,7 @@ def normalize_value(
         )
 
     variants = states.variants(sensor_type, raw_value)
-    if len(variants) > 1:
+    if len({alarm_flag for _, alarm_flag in variants}) > 1:
         return NormalizedValue(
             kind=ValueKind.UNKNOWN,
             raw_value=raw_value,
@@ -97,7 +97,7 @@ def normalize_value(
             quality_flags=["conflicting_state_mapping"],
         )
     if variants:
-        state_code, alarm_flag = next(iter(variants))
+        state_code, alarm_flag = min(variants, key=lambda item: item[0] or "")
         return NormalizedValue(
             kind=ValueKind.KNOWN_STATE,
             raw_value=raw_value,

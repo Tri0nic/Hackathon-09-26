@@ -1,8 +1,54 @@
+from pathlib import Path
+
+import polars as pl
 import pytest
 
+from fire_risk.cli import _normalize_events
 from fire_risk.config import PipelineConfig
 from fire_risk.contracts import StateReference, ValueKind
 from fire_risk.data.normalize import StateIndex, normalize_value
+from fire_risk.data.references import load_state_index
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_true_false_state_variants_are_the_only_conflict() -> None:
+    index = load_state_index(FIXTURES / "states_russian.csv")
+    value = normalize_value(
+        "Газовый датчик", "Температура ниже 3ºC1", index, PipelineConfig()
+    )
+    assert value.kind == ValueKind.UNKNOWN
+    assert value.quality_flags == ["conflicting_state_mapping"]
+
+
+def test_cli_normalization_consumes_russian_state_reference() -> None:
+    events = pl.LazyFrame(
+        {
+            "sensor_type": ["КД Дверь"],
+            "raw_value": ["Норма"],
+            "sensor_name": ["Дверь"],
+            "alarm_flag": [False],
+            "quality_flags": [[]],
+        }
+    )
+
+    row = _normalize_events(
+        events, FIXTURES / "states_russian.csv", PipelineConfig()
+    ).collect().row(0, named=True)
+
+    assert row["value_kind"] == "known_state"
+    assert row["state_code"] == "1"
+    assert row["alarm_flag"] is False
+
+
+def test_same_alarm_multiple_sets_normalize_as_known() -> None:
+    index = load_state_index(FIXTURES / "states_russian.csv")
+
+    value = normalize_value("КД Дверь", "Норма", index, PipelineConfig())
+
+    assert value.kind == ValueKind.KNOWN_STATE
+    assert value.state_code == "1"
+    assert value.alarm_flag is False
 
 
 @pytest.mark.parametrize(

@@ -7,9 +7,111 @@ from fire_risk.data.references import (
     ReferenceIntegrityError,
     build_coverage_report,
     join_channels,
+    scan_channel_reference,
+    scan_state_reference,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_exact_russian_channel_headers_map_without_manual_rename() -> None:
+    row = scan_channel_reference(FIXTURES / "channels_russian.csv").collect().row(
+        0, named=True
+    )
+    assert row["channel_id"] == "120578"
+    assert row["object_id"] == "42"
+    assert row["object_name"] == "Объект 42"
+
+
+def test_same_alarm_multiple_state_sets_are_known_and_preserved() -> None:
+    mapping = scan_state_reference(FIXTURES / "states_russian.csv").collect()
+    row = mapping.filter(pl.col("state_name") == "Норма").row(0, named=True)
+    assert row["alarm_flag"] is False
+    assert row["state_set_ids"] == ["1", "2"]
+    assert row["is_conflicting"] is False
+
+
+def test_true_false_mapping_retains_ids_and_null_alarm() -> None:
+    mapping = scan_state_reference(FIXTURES / "states_russian.csv").collect()
+    row = mapping.filter(pl.col("state_name") == "Температура ниже 3ºC1").row(
+        0, named=True
+    )
+
+    assert row["alarm_flag"] is None
+    assert row["state_set_ids"] == ["13"]
+    assert row["is_conflicting"] is True
+
+
+def test_russian_channel_schema_accepts_bom_and_shuffled_columns(tmp_path: Path) -> None:
+    source = pl.read_csv(FIXTURES / "channels_russian.csv", infer_schema=False)
+    shuffled = tmp_path / "channels_bom.csv"
+    shuffled.write_text(
+        "\ufeff" + source.select(reversed(source.columns)).write_csv(),
+        encoding="utf-8",
+    )
+
+    row = scan_channel_reference(shuffled).collect().row(0, named=True)
+
+    assert row["channel_id"] == "120578"
+    assert row["object_id"] == "42"
+
+
+def test_canonical_reference_headers_remain_supported() -> None:
+    channel = scan_channel_reference(FIXTURES / "channels.csv").collect().row(
+        0, named=True
+    )
+    state = scan_state_reference(FIXTURES / "states.csv").collect().row(0, named=True)
+
+    assert channel["channel_id"] == "001"
+    assert channel["object_id"] == "object-1"
+    assert state["sensor_type"] == "Датчик дыма"
+    assert state["alarm_flag"] is False
+
+
+def test_partial_russian_channel_schema_lists_missing_columns(tmp_path: Path) -> None:
+    path = tmp_path / "partial.csv"
+    pl.read_csv(FIXTURES / "channels_russian.csv", infer_schema=False).drop(
+        "Имя"
+    ).write_csv(path)
+
+    with pytest.raises(ReferenceIntegrityError, match=r"missing=\['Имя'\]; unexpected=\[\]"):
+        scan_channel_reference(path)
+
+
+def test_unexpected_state_header_is_reported(tmp_path: Path) -> None:
+    path = tmp_path / "unexpected.csv"
+    pl.read_csv(FIXTURES / "states.csv", infer_schema=False).with_columns(
+        pl.lit("unused").alias("surprise")
+    ).write_csv(path)
+
+    with pytest.raises(ReferenceIntegrityError, match=r"missing=\[\]; unexpected=\['surprise'\]"):
+        scan_state_reference(path)
+
+
+def test_exact_state_duplicates_collapse(tmp_path: Path) -> None:
+    path = tmp_path / "duplicates.csv"
+    source = (FIXTURES / "states.csv").read_text(encoding="utf-8")
+    path.write_text(source + source.splitlines()[1] + "\n", encoding="utf-8")
+
+    rows = scan_state_reference(path).collect()
+
+    assert rows.height == 1
+    assert rows.row(0, named=True)["state_set_ids"] == ["smoke-states"]
+
+
+def test_alarm_tokens_normalize_strictly(tmp_path: Path) -> None:
+    path = tmp_path / "tokens.csv"
+    path.write_text(
+        "sensor_type,state_set_id,state_name,alarm_flag\n"
+        "T,1,a,true\nT,1,b,t\nT,1,c,1\n"
+        "T,1,d,false\nT,1,e,f\nT,1,g,0\n",
+        encoding="utf-8",
+    )
+
+    rows = scan_state_reference(path).collect()
+    flags = {row["state_name"]: row["alarm_flag"] for row in rows.iter_rows(named=True)}
+
+    assert flags == {"a": True, "b": True, "c": True, "d": False, "e": False, "g": False}
 
 
 def events_fixture() -> pl.LazyFrame:
@@ -66,6 +168,17 @@ def test_coverage_report_counts_unknown_channels_and_unmapped_pairs() -> None:
     assert report.total_events == 3
     assert report.unknown_channel_events == 1
     assert report.unmapped_type_value_pairs == {("Датчик дыма", "Обнаружен дым"): 1}
+
+
+def test_coverage_counts_same_alarm_multiple_sets_as_covered(tmp_path: Path) -> None:
+    states = tmp_path / "states.csv"
+    source = (FIXTURES / "states.csv").read_text(encoding="utf-8")
+    states.write_text(source + "Датчик дыма,other,Норма,false\n", encoding="utf-8")
+
+    report = build_coverage_report(events_fixture(), FIXTURES / "channels.csv", states)
+
+    assert report.unmapped_type_value_pairs == {("Датчик дыма", "Обнаружен дым"): 1}
+    assert report.conflicting_type_value_pairs == {}
 
 
 def test_conflicting_state_rows_are_reported_and_not_counted_as_covered(

@@ -4,7 +4,6 @@ import json
 import os
 import re
 import subprocess
-from collections import defaultdict
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
@@ -15,20 +14,24 @@ import polars as pl
 import typer
 
 from fire_risk.config import PipelineConfig
-from fire_risk.contracts import ChannelReference, IncidentEpisode, StateReference
+from fire_risk.contracts import ChannelReference, IncidentEpisode
 from fire_risk.data.csv_reader import partition_events
 from fire_risk.data.device_metadata import DeviceAgeConfig, estimate_device_metadata
 from fire_risk.data.episodes import build_episodes
 from fire_risk.data.features import attach_horizon_targets, build_feature_snapshots
 from fire_risk.data.labels import ProxyLabelConfig, ProxyLabelProvider
-from fire_risk.data.normalize import StateIndex, normalize_value
+from fire_risk.data.normalize import normalize_value
 from fire_risk.data.pickets import parse_picket
 from fire_risk.data.quality import (
     QualityThresholds,
     mark_historical_artifacts,
     profile_channel_days,
 )
-from fire_risk.data.references import build_coverage_report, join_channels
+from fire_risk.data.references import (
+    build_coverage_report,
+    join_channels,
+    load_state_index,
+)
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -133,11 +136,7 @@ def _normalize_events(
     events: pl.LazyFrame, states: Path, config: PipelineConfig
 ) -> pl.LazyFrame:
     # References are small, explicit materialization boundaries. Journals stay lazy.
-    entries: dict[tuple[str, str], list[StateReference]] = defaultdict(list)
-    for row in pl.read_csv(states, infer_schema=False).iter_rows(named=True):
-        state = StateReference.model_validate(row)
-        entries[(state.sensor_type, state.state_name)].append(state)
-    index = StateIndex(entries)
+    index = load_state_index(states)
 
     def normalize(row: dict[str, Any]) -> dict[str, Any]:
         value = normalize_value(
