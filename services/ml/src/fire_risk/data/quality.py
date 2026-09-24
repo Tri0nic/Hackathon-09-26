@@ -103,3 +103,84 @@ def mark_historical_artifacts(
             .alias("quality_flags")
         )
     return joined.drop("day")
+
+
+def causal_quality_flags(
+    events: pl.LazyFrame, thresholds: QualityThresholds
+) -> pl.LazyFrame:
+    """Replace retrospective day flags with flags observable at each event.
+
+    Consumes the profiled normalized table. The historical median refers only
+    to completed preceding days; all current-day statistics use prefixes.
+    Rows remain flagged from the first detected anomaly through that day.
+    Retain retrospective stuck as baseline_stuck, usable only once that day
+    is complete; it must never enter current-day/window features.
+    """
+    flags = ("burst", "stuck", "historical_artifact")
+    original = events.collect_schema().names()
+    keys = ["channel_id", "_causal_day"]
+    ordered = events.with_columns(
+        pl.col("stuck").alias("baseline_stuck"),
+        pl.col("registered_at").dt.date().alias("_causal_day"),
+        pl.col("registered_at").dt.truncate("1s").alias("_causal_second"),
+    ).sort([*keys, "registered_at", "event_id"])
+    changed = (
+        (pl.col("raw_value") != pl.col("raw_value").shift(1).over(keys))
+        | (pl.col("alarm_flag") != pl.col("alarm_flag").shift(1).over(keys))
+    ).fill_null(True)
+    prefixes = (
+        ordered.with_columns(changed.cast(pl.Int64).alias("_causal_changed"))
+        .with_columns(
+            pl.col("event_id").cum_count().over(keys).alias("_seen"),
+            pl.col("event_id")
+            .cum_count()
+            .over([*keys, "_causal_second"])
+            .alias("_repeats_seen"),
+            pl.col("_causal_changed").cum_sum().over(keys).alias("_causal_run"),
+        )
+        .with_columns(
+            pl.col("event_id")
+            .cum_count()
+            .over([*keys, "_causal_run"])
+            .alias("_run_seen")
+        )
+        .with_columns(
+            pl.col("_repeats_seen").cum_max().over(keys).alias("_max_repeats_seen"),
+            pl.col("_run_seen").cum_max().over(keys).alias("_longest_run_seen"),
+        )
+    )
+    result = (
+        prefixes.with_columns(
+            (
+                (pl.col("_seen") >= thresholds.min_burst_events)
+                & (
+                    (pl.col("_max_repeats_seen") >= thresholds.max_repeats_per_second)
+                    | (
+                        (pl.col("_seen") / pl.col("historical_median_event_count"))
+                        >= thresholds.max_event_rate_deviation
+                    )
+                )
+            )
+            .fill_null(False)
+            .alias("burst"),
+            (pl.col("_longest_run_seen") >= thresholds.min_stuck_run).alias("stuck"),
+            pl.col("quality_flags")
+            .list.eval(pl.element().filter(~pl.element().is_in(flags)))
+            .alias("quality_flags"),
+        )
+        .with_columns(
+            (
+                (pl.col("registered_at").dt.year() == 2021)
+                & (pl.col("burst") | pl.col("stuck"))
+            ).alias("historical_artifact")
+        )
+        .with_columns(pl.col("historical_artifact").alias("exclude_from_fire_training"))
+    )
+    for flag in flags:
+        result = result.with_columns(
+            pl.when(pl.col(flag))
+            .then(pl.concat_list("quality_flags", pl.lit([flag])))
+            .otherwise(pl.col("quality_flags"))
+            .alias("quality_flags")
+        )
+    return result.select(*original, "baseline_stuck")
