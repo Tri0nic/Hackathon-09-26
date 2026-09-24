@@ -1,6 +1,8 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
+
 from fire_risk.config import PipelineConfig
 from fire_risk.contracts import (
     ChannelReference,
@@ -13,9 +15,8 @@ from fire_risk.contracts import (
     StateReference,
     ValueKind,
 )
-from pydantic import ValidationError
 
-WHEN = datetime(2026, 8, 1, 3, 9, 27, tzinfo=timezone.utc)
+WHEN = datetime(2026, 8, 1, 3, 9, 27, tzinfo=UTC)
 
 
 def test_raw_event_preserves_source_value_and_channel_identity() -> None:
