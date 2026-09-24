@@ -78,6 +78,9 @@ class IncidentEpisode(BaseModel):
     sensor_types: list[str]
     alarming_channel_ids: list[str] = Field(default_factory=list)
     alarming_sensor_types: list[str] = Field(default_factory=list)
+    methane_alarm_channel_ids: list[str] = Field(default_factory=list)
+    historical_artifact: bool = False
+    exclude_from_fire_training: bool = False
     picket_from: float | None = None
     picket_to: float | None = None
     quality_flags: list[str] = Field(default_factory=list)
@@ -110,6 +113,9 @@ class IncidentLabel(BaseModel):
     source: LabelSource
     confidence: float = Field(ge=0.0, le=1.0)
     rule_version: str | None = None
+    rule_id: str | None = None
+    episode_id: str | None = None
+    sensor_combination: list[str] = Field(default_factory=list)
 
 
 class PipelineConfig(BaseModel):

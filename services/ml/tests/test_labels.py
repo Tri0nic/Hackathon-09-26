@@ -1,5 +1,8 @@
 """Replaceable incident label providers."""
 
+import builtins
+import importlib
+import sys
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
@@ -311,6 +314,9 @@ def test_journal_keeps_optional_incident_details() -> None:
                 "source": "imported",
                 "confidence": 0.85,
                 "rule_version": "dispatcher-v3",
+                "rule_id": "imported-rule",
+                "episode_id": "imported-episode",
+                "sensor_combination": ["heat", "smoke"],
             }
         ],
         observed_until=OBSERVED_UNTIL,
@@ -325,6 +331,9 @@ def test_journal_keeps_optional_incident_details() -> None:
     assert label.source is LabelSource.IMPORTED
     assert label.confidence == 0.85
     assert label.rule_version == "dispatcher-v3"
+    assert label.rule_id == "imported-rule"
+    assert label.episode_id == "imported-episode"
+    assert label.sensor_combination == ["heat", "smoke"]
 
 
 def test_journal_query_returns_independent_label_objects() -> None:
@@ -403,3 +412,110 @@ def test_proxy_ignores_legacy_episode_without_alarm_composition() -> None:
     )
 
     assert provider.get_incidents(START, START + timedelta(hours=1), {"42"}) == []
+
+
+@pytest.mark.parametrize(
+    ("sensor_types", "methane_channels", "rule_id"),
+    [
+        (["smoke", "heat"], [], "smoke_heat"),
+        (["smoke", "manual_call_point"], [], "smoke_manual_call_point"),
+        (["smoke", "uir-r"], [], "smoke_uir_r"),
+        (["smoke", "pump"], [], "smoke_supporting_pump"),
+        (["heat", "pump"], [], "heat_supporting_pump"),
+        (["gas", "heat"], ["gas-1"], "methane_with_fire_signal"),
+    ],
+)
+def test_proxy_v2_records_exact_rule_and_stable_episode_identity(
+    sensor_types: list[str], methane_channels: list[str], rule_id: str
+) -> None:
+    episode = _episode(sensor_types=sensor_types)
+    episode = IncidentEpisode.model_validate(
+        {**episode.model_dump(), "methane_alarm_channel_ids": methane_channels}
+    )
+    provider = ProxyLabelProvider(
+        ProxyLabelConfig(episodes=[episode], observed_until=OBSERVED_UNTIL)
+    )
+    label = provider.get_incidents(START, OBSERVED_UNTIL, {"42"})[0]
+    assert label.incident_id == "episode-42"
+    assert label.episode_id == "episode-42"
+    assert label.rule_id == rule_id
+    assert label.rule_version == "smvu-proxy-v2"
+    assert label.confidence == 0.5
+    assert label.sensor_combination == sorted(sensor_types)
+    assert label.source is LabelSource.PROXY
+
+    episode.alarming_sensor_types.reverse()
+    episode.alarming_channel_ids.reverse()
+    assert provider.get_incidents(START, OBSERVED_UNTIL, {"42"}) == [label]
+
+
+def test_mass_rule_requires_configured_distinct_channels_and_types() -> None:
+    episode = _episode(sensor_types=["smoke", "gas"], channel_ids=["a", "b", "c", "d"])
+    config = ProxyLabelConfig(
+        episodes=[episode],
+        observed_until=OBSERVED_UNTIL,
+        mass_alarm_min_channels=4,
+        mass_alarm_min_types=2,
+    )
+    provider = ProxyLabelProvider(config)
+    label = provider.get_incidents(START, OBSERVED_UNTIL, {"42"})[0]
+    assert label.rule_id == "coordinated_mass_alarm"
+    assert label.rule_version == "smvu-proxy-v2"
+    assert label.incident_id == label.episode_id == "episode-42"
+    assert label.sensor_combination == ["gas", "smoke"]
+    assert label.confidence == 0.5
+    episode.alarming_channel_ids = ["a", "b", "c", "c"]
+    assert provider.get_incidents(START, OBSERVED_UNTIL, {"42"}) == []
+    episode.alarming_channel_ids = ["a", "b", "c", "d"]
+    episode.alarming_sensor_types = ["smoke", "Датчик дыма"]
+    assert provider.get_incidents(START, OBSERVED_UNTIL, {"42"}) == []
+
+
+@pytest.mark.parametrize("flag", ["historical_artifact", "exclude_from_fire_training"])
+def test_proxy_rejects_episode_quality_exclusions(flag: str) -> None:
+    episode = IncidentEpisode.model_validate({**_episode().model_dump(), flag: True})
+    provider = ProxyLabelProvider(
+        ProxyLabelConfig(episodes=[episode], observed_until=OBSERVED_UNTIL)
+    )
+    assert provider.get_incidents(START, OBSERVED_UNTIL, {"42"}) == []
+
+
+def test_proxy_generation_does_not_import_feature_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = builtins.__import__
+
+    def guarded_import(name: str, *args: object, **kwargs: object) -> object:
+        if "features" in name.split("."):
+            raise AssertionError("proxy generation must not import features")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    import fire_risk.data.labels as labels_module
+
+    spec = importlib.util.spec_from_file_location(
+        "_proxy_boundary_check", labels_module.__file__
+    )
+    assert spec is not None and spec.loader is not None
+    isolated_module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, isolated_module)
+    spec.loader.exec_module(isolated_module)
+    provider = isolated_module.ProxyLabelProvider(
+        isolated_module.ProxyLabelConfig(
+            episodes=[_episode()], observed_until=OBSERVED_UNTIL
+        )
+    )
+    assert len(provider.get_incidents(START, OBSERVED_UNTIL, {"42"})) == 1
+
+
+@pytest.mark.parametrize(("channels", "types"), [(1, 2), (3, 1)])
+def test_mass_rule_cannot_be_configured_as_a_single_signal(
+    channels: int, types: int
+) -> None:
+    with pytest.raises(ValueError, match="distinct channels/types"):
+        ProxyLabelConfig(
+            episodes=[],
+            observed_until=OBSERVED_UNTIL,
+            mass_alarm_min_channels=channels,
+            mass_alarm_min_types=types,
+        )

@@ -168,6 +168,12 @@ def test_cli_wires_normalization_episodes_proxy_targets_and_quality(
     assert labels.height == 1
     assert labels["source"].item() == "proxy"
     assert labels["decision"].item() == "unknown"
+    assert labels["rule_version"].item() == "smvu-proxy-v2"
+    assert labels["rule_id"].item() == "smoke_heat"
+    assert labels["episode_id"].item() == labels["incident_id"].item()
+    assert labels["sensor_combination"].to_list() == [["heat", "smoke"]]
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["configuration"]["proxy_rule_version"] == "smvu-proxy-v2"
     snapshots = pl.read_parquet(directory / "feature_snapshots.parquet")
     assert snapshots.height == 9
     assert snapshots["inventory_channel_count"].to_list() == [2] * 9
@@ -208,7 +214,7 @@ def test_methane_threshold_participates_in_episode_alarm_composition_and_proxy_l
         "ид_события,ид_канала_данных,дата,время,тревожное,значение_датчика\n"
         "1,001,2024-01-03,00:00:00,t,Обнаружен дым\n"
         "2,002,2024-01-03,00:01:00,f,1.20\n"
-        "3,003,2024-01-03,00:02:00,t,Пуск\n"
+        "3,003,2024-01-03,00:02:00,f,Норма\n"
         "4,002,2024-01-03,00:03:00,f,0.75\n",
         encoding="utf-8",
     )
@@ -237,16 +243,20 @@ def test_methane_threshold_participates_in_episode_alarm_composition_and_proxy_l
     assert result.exit_code == 0, result.output + str(result.exception)
     directory = tmp_path / "out" / "test-run"
     normalized = pl.read_parquet(directory / "normalized_events.parquet")
-    assert normalized["alarm_flag"].to_list() == [True, gas_alarm, True, False]
-    assert normalized["source_alarm_flag"].to_list() == [True, False, True, False]
+    assert normalized["alarm_flag"].to_list() == [True, gas_alarm, False, False]
+    assert normalized["source_alarm_flag"].to_list() == [True, False, False, False]
     episodes = pl.read_parquet(directory / "episodes.parquet")
     assert (
         "Газовый датчик" in episodes["alarming_sensor_types"].item().to_list()
     ) is gas_alarm
     labels = pl.read_parquet(directory / "incident_labels.parquet")
     assert labels.height == label_count
+    assert episodes["methane_alarm_channel_ids"].to_list() == (
+        [["002"]] if gas_alarm else [[]]
+    )
     if label_count:
         assert labels["source"].item() == "proxy"
+        assert labels["rule_id"].item() == "methane_with_fire_signal"
 
 
 def test_cli_reports_malformed_required_values_ragged_rows_and_quotes(

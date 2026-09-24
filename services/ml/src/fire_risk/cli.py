@@ -20,7 +20,11 @@ from fire_risk.data.device_metadata import DeviceAgeConfig, estimate_device_meta
 from fire_risk.data.episodes import build_episodes
 from fire_risk.data.features import attach_horizon_targets, build_feature_snapshots
 from fire_risk.data.inventory import build_object_inventory
-from fire_risk.data.labels import ProxyLabelConfig, ProxyLabelProvider
+from fire_risk.data.labels import (
+    PROXY_RULE_VERSION,
+    ProxyLabelConfig,
+    ProxyLabelProvider,
+)
 from fire_risk.data.normalize import normalize_value
 from fire_risk.data.pickets import parse_picket
 from fire_risk.data.quality import (
@@ -70,6 +74,9 @@ _LABEL_SCHEMA = pl.Schema(
         "source": pl.String(),
         "confidence": pl.Float64(),
         "rule_version": pl.String(),
+        "rule_id": pl.String(),
+        "episode_id": pl.String(),
+        "sensor_combination": pl.List(pl.String()),
     }
 )
 
@@ -311,7 +318,7 @@ def prepare(
         "device_metadata": asdict(age_config),
         "device_seed": device_seed,
         "quality_thresholds": asdict(thresholds),
-        "proxy_rule_version": "smvu-proxy-v1",
+        "proxy_rule_version": PROXY_RULE_VERSION,
         "label_observed_until": observed_until.isoformat(),
     }
     started_at = datetime.now(UTC)
@@ -366,7 +373,9 @@ def prepare(
     )
     normalized = pl.scan_parquet(directory / "normalized_events.parquet")
     episodes, membership = build_episodes(
-        normalized, timedelta(minutes=settings.episode_gap_minutes)
+        normalized,
+        timedelta(minutes=settings.episode_gap_minutes),
+        methane_alarm_percent=settings.methane_alarm_percent,
     )
     episodes.sink_parquet(directory / "episodes.parquet")
     membership.sink_parquet(directory / "episode_membership.parquet")

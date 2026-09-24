@@ -3,8 +3,11 @@
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
+import pytest
 
+from fire_risk.contracts import IncidentEpisode
 from fire_risk.data.episodes import build_episodes
+from fire_risk.data.labels import ProxyLabelConfig, ProxyLabelProvider
 
 START = datetime(2024, 1, 2, 3, 0, tzinfo=UTC)
 
@@ -155,3 +158,99 @@ def test_episode_ids_and_output_order_are_independent_of_input_order() -> None:
         == reversed_membership.collect().to_dicts()
     )
     assert first_episodes.collect()["episode_id"].n_unique() == 2
+
+
+@pytest.mark.parametrize("technical", [True, False])
+@pytest.mark.parametrize(
+    ("sensor_types", "numeric_values"),
+    [
+        (["smoke", "heat"], [None, None]),
+        (["smoke", "manual_call_point"], [None, None]),
+        (["smoke", "uir-r"], [None, None]),
+        (["smoke", "pump"], [None, None]),
+        (["heat", "pump"], [None, None]),
+        (["gas", "heat"], [1.2, None]),
+        (["gas", "smoke", "smoke"], [None, None, None]),
+    ],
+)
+@pytest.mark.parametrize(
+    "excluded", [None, "historical_artifact", "exclude_from_fire_training"]
+)
+def test_technical_or_excluded_episode_cannot_create_proxy(
+    technical: bool,
+    excluded: str | None,
+    sensor_types: list[str],
+    numeric_values: list[float | None],
+) -> None:
+    events = _events(*range(len(sensor_types))).with_columns(
+        pl.Series("sensor_type", sensor_types),
+        pl.Series("channel_id", [f"channel-{i}" for i in range(len(sensor_types))]),
+        pl.Series(
+            "value_kind",
+            [
+                "malfunction"
+                if technical
+                else ("numeric" if value is not None else "known_state")
+                for value in numeric_values
+            ],
+        ),
+        pl.Series("numeric_value", numeric_values, dtype=pl.Float64),
+    )
+    if excluded:
+        events = events.with_columns(
+            pl.Series(excluded, [True] + [False] * (len(sensor_types) - 1))
+        )
+    frame, _ = build_episodes(events, timedelta(minutes=30))
+    episode = IncidentEpisode.model_validate(frame.collect().row(0, named=True))
+    if technical:
+        assert episode.alarming_channel_ids == []
+        assert episode.alarming_sensor_types == []
+    provider = ProxyLabelProvider(
+        ProxyLabelConfig(episodes=[episode], observed_until=START + timedelta(days=1))
+    )
+    labels = provider.get_incidents(START, START + timedelta(hours=1), {"object-1"})
+    assert len(labels) == (0 if technical or excluded else 1)
+
+
+def test_malfunction_cannot_support_a_single_genuine_alarm() -> None:
+    events = _events(0, 1).with_columns(
+        pl.Series("sensor_type", ["smoke", "heat"]),
+        pl.Series("value_kind", ["known_state", "malfunction"]),
+    )
+    frame, _ = build_episodes(events, timedelta(minutes=30))
+    episode = IncidentEpisode.model_validate(frame.collect().row(0, named=True))
+    assert episode.severity == "alarm"
+    assert episode.alarming_sensor_types == ["smoke"]
+    provider = ProxyLabelProvider(
+        ProxyLabelConfig(episodes=[episode], observed_until=START + timedelta(days=1))
+    )
+    assert provider.get_incidents(START, START + timedelta(hours=1), {"object-1"}) == []
+
+
+@pytest.mark.parametrize(
+    ("gas_value", "threshold", "expected"),
+    [(1.0, 1.0, True), (1.0, 2.0, False), (2.0, 2.0, True)],
+)
+def test_methane_threshold_metadata_drives_proxy_without_source_alarm(
+    gas_value: float, threshold: float, expected: bool
+) -> None:
+    events = _events(0, 1).with_columns(
+        pl.Series("sensor_type", ["Газовый датчик", "heat"]),
+        pl.Series("channel_id", ["gas-1", "heat-1"]),
+        pl.Series("alarm_flag", [False, True]),
+        pl.Series("value_kind", ["numeric", "known_state"]),
+        pl.Series("numeric_value", [gas_value, None]),
+    )
+    frame, _ = build_episodes(
+        events, timedelta(minutes=30), methane_alarm_percent=threshold
+    )
+    episode = IncidentEpisode.model_validate(frame.collect().row(0, named=True))
+    assert episode.methane_alarm_channel_ids == (["gas-1"] if expected else [])
+    provider = ProxyLabelProvider(
+        ProxyLabelConfig(episodes=[episode], observed_until=START + timedelta(days=1))
+    )
+    labels = provider.get_incidents(START, START + timedelta(hours=1), {"object-1"})
+    assert len(labels) == int(expected)
+    if labels:
+        assert labels[0].rule_id == "methane_with_fire_signal"
+        assert labels[0].sensor_combination == ["gas", "heat"]

@@ -14,6 +14,8 @@ from fire_risk.contracts import (
     LabelSource,
 )
 
+PROXY_RULE_VERSION = "smvu-proxy-v2"
+
 _SENSOR_CATEGORY = {
     "smoke": "smoke",
     "датчик дыма": "smoke",
@@ -48,11 +50,15 @@ class LabelImportError(ValueError):
 class ProxyLabelConfig:
     episodes: Sequence[IncidentEpisode]
     observed_until: datetime
-    rule_version: str = "smvu-proxy-v1"
+    rule_version: str = PROXY_RULE_VERSION
     confidence: float = 0.5
+    mass_alarm_min_channels: int = 3
+    mass_alarm_min_types: int = 2
 
     def __post_init__(self) -> None:
         _validate_observed_until(self.observed_until)
+        if self.mass_alarm_min_channels < 2 or self.mass_alarm_min_types < 2:
+            raise ValueError("mass alarm requires at least two distinct channels/types")
 
 
 class ProxyLabelProvider:
@@ -75,12 +81,14 @@ class ProxyLabelProvider:
                 source=LabelSource.PROXY,
                 confidence=self._config.confidence,
                 rule_version=self._config.rule_version,
+                rule_id=rule_id,
+                episode_id=episode.episode_id,
+                sensor_combination=sorted(_alarm_families(episode)),
             )
             for episode in self._config.episodes
             if episode.object_id in object_ids
             and start <= episode.started_at < end
-            and "historical_artifact" not in episode.quality_flags
-            and _is_fire_pattern(episode)
+            and (rule_id := _matching_rule(episode, self._config)) is not None
         ]
 
 
@@ -126,6 +134,9 @@ class DecisionJournalLabelProvider:
                     "source": row.get("source") or LabelSource.DISPATCHER,
                     "confidence": row.get("confidence", 1.0),
                     "rule_version": row.get("rule_version"),
+                    "rule_id": row.get("rule_id"),
+                    "episode_id": row.get("episode_id"),
+                    "sensor_combination": row.get("sensor_combination", []),
                 }
             )
         except ValidationError as exc:
@@ -156,17 +167,53 @@ def _validate_observed_until(observed_until: datetime) -> None:
         raise ValueError("observed_until must be timezone-aware")
 
 
-def _is_fire_pattern(episode: IncidentEpisode) -> bool:
-    if episode.severity != "alarm":
-        return False
+def _alarm_families(episode: IncidentEpisode) -> set[str]:
     types = {
-        _SENSOR_CATEGORY.get(sensor_type.strip().casefold(), "other")
+        _SENSOR_CATEGORY.get(
+            sensor_type.strip().casefold(), sensor_type.strip().casefold()
+        )
         for sensor_type in episode.alarming_sensor_types
     }
-    if "smoke" not in types:
-        return False
-    if types.intersection({"heat", "manual_call_point", "uir-r"}):
-        return True
-    return "gas" in types and (
-        "pump" in types or len(set(episode.alarming_channel_ids)) >= 3
-    )
+    if episode.methane_alarm_channel_ids:
+        types.add("gas")
+    return types
+
+
+def _matching_rule(episode: IncidentEpisode, config: ProxyLabelConfig) -> str | None:
+    """First matching rule wins; only episode alarm composition is consulted.
+
+    The episode builder removes malfunction signals before this boundary. An
+    excluded member invalidates the entire episode, including its good signals.
+    Episode IDs already encode stable object/start identity, and remain incident
+    IDs for compatibility with target/episode grouping.
+    """
+    if (
+        episode.severity != "alarm"
+        or episode.historical_artifact
+        or episode.exclude_from_fire_training
+        or {"historical_artifact", "exclude_from_fire_training"}.intersection(
+            episode.quality_flags
+        )
+    ):
+        return None
+    types = _alarm_families(episode)
+    for rule_id, required in (
+        ("smoke_heat", {"smoke", "heat"}),
+        ("smoke_manual_call_point", {"smoke", "manual_call_point"}),
+        ("smoke_uir_r", {"smoke", "uir-r"}),
+        ("smoke_supporting_pump", {"smoke", "pump"}),
+        ("heat_supporting_pump", {"heat", "pump"}),
+    ):
+        if required <= types:
+            return rule_id
+    if episode.methane_alarm_channel_ids and types.intersection(
+        {"smoke", "heat", "manual_call_point", "uir-r"}
+    ):
+        return "methane_with_fire_signal"
+    if (
+        len(set(episode.alarming_channel_ids) | set(episode.methane_alarm_channel_ids))
+        >= config.mass_alarm_min_channels
+        and len(types) >= config.mass_alarm_min_types
+    ):
+        return "coordinated_mass_alarm"
+    return None

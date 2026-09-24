@@ -4,11 +4,36 @@ from datetime import timedelta
 
 import polars as pl
 
+from fire_risk.data.inventory import family_expression
+
 
 def build_episodes(
-    events: pl.LazyFrame, gap: timedelta
+    events: pl.LazyFrame, gap: timedelta, *, methane_alarm_percent: float = 1.0
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """Return episodes and event membership; unknown objects have no episode."""
+    names = events.collect_schema().names()
+    defaults = {
+        "value_kind": pl.lit(None, dtype=pl.String),
+        "numeric_value": pl.lit(None, dtype=pl.Float64),
+        "historical_artifact": pl.lit(False),
+        "exclude_from_fire_training": pl.lit(False),
+    }
+    events = events.with_columns(
+        expr.alias(name) for name, expr in defaults.items() if name not in names
+    )
+    methane = (
+        family_expression("gas")
+        & (pl.col("value_kind") == "numeric")
+        & pl.col("numeric_value").is_finite()
+        & (pl.col("numeric_value") >= methane_alarm_percent)
+    ).fill_null(False)
+    fire_alarm = (
+        pl.col("alarm_flag") & (pl.col("value_kind") != "malfunction").fill_null(True)
+    ).fill_null(False)
+    events = events.with_columns(
+        methane.alias("_methane_alarm"),
+        (fire_alarm | methane).alias("_fire_alarm"),
+    )
     known = events.filter(pl.col("object_id").is_not_null()).sort(
         ["object_id", "registered_at", "event_id"]
     )
@@ -44,24 +69,32 @@ def build_episodes(
         .agg(
             pl.col("registered_at").min().alias("started_at"),
             pl.col("registered_at").max().alias("ended_at"),
-            pl.when(pl.col("alarm_flag").any())
+            pl.when(pl.col("_fire_alarm").any())
             .then(pl.lit("alarm"))
             .otherwise(pl.lit("unknown"))
             .alias("severity"),
             pl.col("channel_id").drop_nulls().unique().sort().alias("channel_ids"),
             pl.col("sensor_type").drop_nulls().unique().sort().alias("sensor_types"),
             pl.col("channel_id")
-            .filter(pl.col("alarm_flag"))
+            .filter(pl.col("_fire_alarm"))
             .drop_nulls()
             .unique()
             .sort()
             .alias("alarming_channel_ids"),
             pl.col("sensor_type")
-            .filter(pl.col("alarm_flag"))
+            .filter(pl.col("_fire_alarm"))
             .drop_nulls()
             .unique()
             .sort()
             .alias("alarming_sensor_types"),
+            pl.col("channel_id")
+            .filter(pl.col("_methane_alarm"))
+            .drop_nulls()
+            .unique()
+            .sort()
+            .alias("methane_alarm_channel_ids"),
+            pl.col("historical_artifact").fill_null(False).any(),
+            pl.col("exclude_from_fire_training").fill_null(False).any(),
             pl.col("picket_sort_key").min().alias("picket_from"),
             pl.col("picket_sort_key").max().alias("picket_to"),
             pl.col("quality_flags")
@@ -82,6 +115,9 @@ def build_episodes(
             "sensor_types",
             "alarming_channel_ids",
             "alarming_sensor_types",
+            "methane_alarm_channel_ids",
+            "historical_artifact",
+            "exclude_from_fire_training",
             "picket_from",
             "picket_to",
             "quality_flags",
