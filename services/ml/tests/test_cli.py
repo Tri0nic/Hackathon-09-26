@@ -1,10 +1,13 @@
 """Real fixture preparation, output provenance, and deterministic reruns."""
 
 import json
+import os
+import subprocess
 from hashlib import sha256
 from pathlib import Path
 
 import polars as pl
+import pytest
 from polars.testing import assert_frame_equal
 from typer.testing import CliRunner
 
@@ -203,3 +206,73 @@ def test_configuration_changes_grid_and_manifest_hash(tmp_path: Path) -> None:
     assert before["row_counts"]["feature_snapshots"] == 5
     assert after["row_counts"]["feature_snapshots"] == 3
     assert before["config_hash"] != after["config_hash"]
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        "smoke-test.",
+        "smoke-test..",
+        "smoke-test ",
+        "CON",
+        "con.txt",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "COM9.log",
+        "LPT1",
+        "LPT9.backup",
+        "test/run",
+        "test\\run",
+        "test:run",
+    ],
+)
+def test_invalid_windows_run_ids_fail_before_writing_outputs(
+    tmp_path: Path, run_id: str
+) -> None:
+    output = tmp_path / "out"
+    args = prepare_args(output)
+    args[-1] = run_id
+    result = RUNNER.invoke(app, args)
+    assert result.exit_code == 2, result.output + str(result.exception)
+    assert not output.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows filesystem case alias")
+def test_run_id_cannot_alias_another_id_by_case(tmp_path: Path) -> None:
+    existing = tmp_path / "test-run"
+    existing.mkdir()
+    marker = existing / "keep.txt"
+    marker.write_text("unchanged", encoding="utf-8")
+    args = prepare_args(tmp_path)
+    args[-1] = "TEST-RUN"
+    result = RUNNER.invoke(app, args)
+    assert result.exit_code == 2, result.output + str(result.exception)
+    assert sorted(path.name for path in existing.iterdir()) == ["keep.txt"]
+    assert marker.read_text(encoding="utf-8") == "unchanged"
+
+
+@pytest.mark.parametrize("outside_output", [False, True])
+def test_run_directory_alias_cannot_overwrite_another_directory(
+    tmp_path: Path, outside_output: bool
+) -> None:
+    output = tmp_path / "out"
+    output.mkdir()
+    target = (tmp_path if outside_output else output) / "original"
+    target.mkdir()
+    marker = target / "keep.txt"
+    marker.write_text("unchanged", encoding="utf-8")
+    alias = output / "test-run"
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(alias), str(target)],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        alias.symlink_to(target, target_is_directory=True)
+    result = RUNNER.invoke(app, prepare_args(output))
+    assert result.exit_code == 2, result.output + str(result.exception)
+    assert sorted(path.name for path in target.iterdir()) == ["keep.txt"]
+    assert marker.read_text(encoding="utf-8") == "unchanged"

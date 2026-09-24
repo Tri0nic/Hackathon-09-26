@@ -23,7 +23,6 @@ from fire_risk.data.normalize import StateIndex, normalize_value
 from fire_risk.data.pickets import parse_picket
 from fire_risk.data.quality import (
     QualityThresholds,
-    causal_quality_flags,
     mark_historical_artifacts,
     profile_channel_days,
 )
@@ -218,8 +217,22 @@ def prepare(
     device_as_of: Annotated[str, typer.Option()] = "2026-09-24",
 ) -> None:
     """Write one run directory; repeating identical inputs reproduces its data."""
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", run_id):
-        raise typer.BadParameter("run-id must be one alphanumeric path component")
+    if (
+        not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", run_id)
+        or run_id.endswith((".", " "))
+        or re.fullmatch(
+            r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", run_id, re.IGNORECASE
+        )
+    ):
+        raise typer.BadParameter(
+            "run-id must be one non-reserved Windows-safe path component without a trailing dot or space"
+        )
+    root = output.resolve()
+    directory = (root / run_id).resolve()
+    if directory.parent != root or directory.name != run_id:
+        raise typer.BadParameter(
+            "run-id resolves outside output or aliases another directory name"
+        )
     settings = (
         PipelineConfig.model_validate_json(config.read_text(encoding="utf-8"))
         if config
@@ -240,7 +253,6 @@ def prepare(
         "proxy_rule_version": "smvu-proxy-v1",
     }
     started_at = datetime.now(UTC)
-    directory = output.resolve() / run_id
     directory.mkdir(parents=True, exist_ok=True)
     journals = sorted(events, key=lambda path: str(path.resolve()))
     source_records = [
@@ -292,9 +304,8 @@ def prepare(
     episodes = pl.scan_parquet(directory / "episodes.parquet")
     _proxy_labels(episodes).sink_parquet(directory / "incident_labels.parquet")
     labels = pl.scan_parquet(directory / "incident_labels.parquet")
-    feature_events = causal_quality_flags(normalized, thresholds)
     attach_horizon_targets(
-        build_feature_snapshots(feature_events, settings), labels
+        build_feature_snapshots(normalized, settings), labels
     ).sink_parquet(directory / "feature_snapshots.parquet")
     invalid = quarantined.select(pl.len()).collect(engine="streaming").item()
     quality = (

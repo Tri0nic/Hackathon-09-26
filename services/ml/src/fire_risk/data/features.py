@@ -3,6 +3,12 @@
 import polars as pl
 
 from fire_risk.config import PipelineConfig
+from fire_risk.data.quality import (
+    QualityThresholds,
+    causal_quality_flags,
+    mark_historical_artifacts,
+    profile_channel_days,
+)
 
 _WINDOWS = ("5m", "30m", "3h", "6h", "24h")
 _KEYS = ["object_id", "scoring_timestamp"]
@@ -26,6 +32,44 @@ def _feature_events(events: pl.LazyFrame) -> pl.LazyFrame:
     events = events.with_columns(
         expr.alias(name) for name, expr in optional.items() if name not in names
     )
+    flags = ("stuck", "burst", "historical_artifact")
+    baseline_stuck = (
+        pl.col("baseline_stuck").fill_null(False)
+        if "baseline_stuck" in names
+        else pl.col("quality_flags").list.contains("stuck").fill_null(False)
+        | (pl.col("stuck").fill_null(False) if "stuck" in names else pl.lit(False))
+    )
+    # Retrospective inputs are safe only for completed-day baseline exclusion.
+    # Rebuild window flags at this public boundary, even for pre-profiled input.
+    events = events.with_columns(baseline_stuck.alias("baseline_stuck")).with_columns(
+        pl.col("quality_flags")
+        .list.eval(pl.element().filter(~pl.element().is_in(flags)))
+        .alias("quality_flags")
+    )
+    if {"event_id", "raw_value"}.issubset(names):
+        history = events.select(
+            "event_id",
+            "raw_value",
+            "object_id",
+            "registered_at",
+            "channel_id",
+            "sensor_type",
+            "alarm_flag",
+            "numeric_value",
+            "value_kind",
+            "quality_flags",
+        )
+        thresholds = QualityThresholds()
+        events = causal_quality_flags(
+            mark_historical_artifacts(
+                history, profile_channel_days(history), thresholds
+            ),
+            thresholds,
+        )
+    else:
+        # Reduced signal-only inputs cannot establish a state run. Unverified
+        # technical flags must not masquerade as observations available at t.
+        events = events.with_columns(pl.lit(False).alias(flag) for flag in flags)
     return events.filter(
         pl.col("object_id").is_not_null() & pl.col("registered_at").is_not_null()
     ).select(
@@ -36,19 +80,8 @@ def _feature_events(events: pl.LazyFrame) -> pl.LazyFrame:
         "alarm_flag",
         pl.col("numeric_value").cast(pl.Float64),
         "value_kind",
-        (
-            pl.col("baseline_stuck").fill_null(False)
-            if "baseline_stuck" in names
-            else pl.col("quality_flags").list.contains("stuck").fill_null(False)
-            | (pl.col("stuck").fill_null(False) if "stuck" in names else pl.lit(False))
-        ).alias("_baseline_stuck"),
-        *[
-            (
-                pl.col("quality_flags").list.contains(flag).fill_null(False)
-                | (pl.col(flag).fill_null(False) if flag in names else pl.lit(False))
-            ).alias(flag)
-            for flag in ("stuck", "burst", "historical_artifact")
-        ],
+        pl.col("baseline_stuck").fill_null(False).alias("_baseline_stuck"),
+        *[pl.col(flag).fill_null(False) for flag in flags],
         *[
             pl.col("sensor_type")
             .str.strip_chars()
@@ -115,7 +148,10 @@ def build_feature_snapshots(
     Windows are (t - window, t]. Empty grid intervals have zero counts and
     null numeric summaries. Baselines average observed, eligible completed
     days; stuck events are omitted. Weekday uses ISO numbering (Monday = 1).
-    No incident, label, or whole-day profile columns enter this computation.
+    Causal quality is rebuilt from raw event history at this boundary. Without
+    raw values/event IDs, unverifiable technical flags default to zero; existing
+    stuck annotations can only exclude completed days from the baseline.
+    No incident, label, or current whole-day profile enters a window feature.
     """
     if config.scoring_step_minutes <= 0:
         raise ValueError("scoring_step_minutes must be positive")
@@ -214,8 +250,10 @@ def attach_horizon_targets(
     provisional positives. With no decision column, the input is presumed
     to be an already selected incident table.
 
-    Groups prefer the earliest active incident, otherwise the nearest future
-    incident within 24h; ties use incident_id for reproducibility.
+    Groups are connected components of incident influence intervals: from
+    24h before start through the active interval. Overlapping intervals merge
+    transitively within each object. The earliest incident (ties use its ID)
+    names the component, independent of input order and selected snapshots.
     """
     names = incidents.collect_schema().names()
     if "decision" in names:
@@ -229,6 +267,55 @@ def attach_horizon_targets(
     labels = incidents.select(
         "object_id", "incident_id", "started_at", "ended_at"
     ).sort(["object_id", "started_at", "incident_id"])
+    # Integer microseconds let ongoing intervals extend to infinity without
+    # creating artificial calendar dates. Point incidents include their start.
+    labels = (
+        labels.with_columns(
+            (pl.col("started_at") - pl.duration(hours=24))
+            .dt.epoch("us")
+            .alias("_influence_start"),
+            pl.when(pl.col("ended_at").is_null())
+            .then(pl.lit(2**63 - 1, dtype=pl.Int64))
+            .otherwise(
+                pl.max_horizontal(
+                    pl.col("ended_at").dt.epoch("us"),
+                    pl.col("started_at").dt.epoch("us") + 1,
+                )
+            )
+            .alias("_influence_end"),
+        )
+        .with_columns(
+            pl.col("_influence_end").cum_max().over("object_id").alias("_covered_until")
+        )
+        .with_columns(
+            pl.col("_covered_until").shift(1).over("object_id").alias("_prior_end")
+        )
+        .with_columns(
+            (
+                pl.col("_prior_end").is_null()
+                | (pl.col("_influence_start") >= pl.col("_prior_end"))
+            )
+            .cast(pl.Int64)
+            .alias("_new_component")
+        )
+        .with_columns(
+            pl.col("_new_component").cum_sum().over("object_id").alias("_component")
+        )
+        .with_columns(
+            pl.col("incident_id")
+            .first()
+            .over("object_id", "_component")
+            .alias("_context_group_id")
+        )
+        .drop(
+            "_influence_start",
+            "_influence_end",
+            "_covered_until",
+            "_prior_end",
+            "_new_component",
+            "_component",
+        )
+    )
     keys = snapshots.select(_KEYS)
     bounds = keys.group_by("object_id").agg(
         pl.col("scoring_timestamp").min().alias("_first_score"),
@@ -272,7 +359,7 @@ def attach_horizon_targets(
         )
         .sort([*_KEYS, "started_at", "incident_id"])
         .group_by(_KEYS)
-        .agg(pl.col("incident_id").first().alias("_active_id"))
+        .agg(pl.col("_context_group_id").first().alias("_active_id"))
     )
     future = labels.unique(
         subset=["object_id", "started_at"], keep="first", maintain_order=True
@@ -306,9 +393,11 @@ def attach_horizon_targets(
         result.with_columns(
             pl.coalesce(
                 "_active_id",
-                pl.when(pl.col("target_24h")).then(pl.col("incident_id")),
+                pl.when(pl.col("target_24h")).then(pl.col("_context_group_id")),
             ).alias("episode_group_id")
         )
-        .drop("incident_id", "started_at", "ended_at", "_active_id")
+        .drop(
+            "incident_id", "started_at", "ended_at", "_active_id", "_context_group_id"
+        )
         .sort(_KEYS)
     )

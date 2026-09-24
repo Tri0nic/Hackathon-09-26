@@ -122,7 +122,11 @@ read; no event journal is converted to a Python list. Proxy label records are
 converted in batches of at most 10,000 episodes inside Polars output processing.
 
 Source CSVs are never modified. Repeating a run ID replaces that run's generated
-files; choose a new ID to preserve an earlier build. The manifest records source
+files; choose a new ID to preserve an earlier build. Run IDs must be one
+Windows-safe component: trailing dots/spaces, device names (including extensions),
+separators and colons are rejected. Existing case aliases, junctions or symlinks
+that resolve outside the output root or to another name are rejected before
+any output is written; exact same-ID reruns remain supported. The manifest records source
 filenames, absolute paths and byte sizes, a SHA-256 of canonical configuration,
 schema and Polars versions, UTC execution timestamps, and Parquet row counts.
 Configuration sets are sorted before hashing. Determinism comparisons exclude
@@ -145,10 +149,15 @@ days. Current-day events and retrospectively known stuck intervals are excluded;
 days with no eligible observations do not enter its denominator. No eligible
 history gives null baseline/ratio. Activity ratio is 24h event count / baseline.
 Retrospective day quality flags stay in normalized data and reports for audit.
-Snapshots use causal quality flags: a day is flagged only from the first event
-at which thresholds are crossed. The separate `baseline_stuck` input is used
-only when its day is complete, never as a current-window feature. This prevents
-a later same-day burst from changing an earlier snapshot.
+The public snapshot builder recomputes causal quality flags from raw event
+history, including when its input already carries retrospective or causal flags.
+A day is flagged only from the first event at which thresholds are crossed.
+Reduced inputs without `event_id`/`raw_value` cannot establish state histories,
+so unverified window quality flags default to zero. Existing stuck annotations
+on reduced inputs can exclude completed days from the baseline. The separate
+`baseline_stuck` marker is used only when its day is complete, never as a
+current-window feature. This prevents a later same-day burst from changing an
+earlier snapshot, whether the builder is called directly or through the CLI.
 
 Targets consume the canonical incident table separately from feature building:
 `target_now` uses active **[start, end)** intervals, with zero-duration incidents
@@ -159,10 +168,15 @@ decisions and undecided dispatcher labels are not. Proxy labels remain
 `source=proxy`, `decision=unknown`, with confidence and rule version; they are not
 confirmed fires. A decision-free incident table is assumed already filtered.
 
-`episode_group_id` is the earliest active incident ID, otherwise the nearest
-future incident within 24h (ties break on ID). A snapshot with no match gets
-null. Overlapping incidents can create overlapping forecast contexts; temporal
-split/embargo policy remains the training stage's responsibility. This stage
+`episode_group_id` represents a connected forecast context per object. Each
+incident influences the interval starting 24h before its start and continuing
+through its active interval. Overlapping influence intervals merge transitively,
+and the earliest incident ID (ties break on ID) names the component. Thus a
+future incident cannot create target-positive rows assigned to different groups
+just because an earlier incident is active at one scoring time. Disconnected
+contexts keep separate IDs; grouping is independent of input order and snapshot
+selection. A snapshot with no active/future match gets null. Temporal split and
+embargo policy remains the training stage's responsibility. This stage
 does not mark right-censored horizons after the journal's final observation.
 The broader duration, slope, entropy, inventory and freshness features listed
 in the design are not implemented in this foundation's minimum feature contract.
