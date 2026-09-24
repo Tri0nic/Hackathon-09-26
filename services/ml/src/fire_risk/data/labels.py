@@ -114,6 +114,7 @@ class DecisionJournalLabelProvider:
                     "confirmed_at": row.get("confirmed_at"),
                     "source": row.get("source") or LabelSource.DISPATCHER,
                     "confidence": row.get("confidence", 1.0),
+                    "rule_version": row.get("rule_version"),
                 }
             )
         except ValidationError as exc:
@@ -126,7 +127,7 @@ class DecisionJournalLabelProvider:
     ) -> list[IncidentLabel]:
         _validate_period(start, end)
         return [
-            label
+            label.model_copy(deep=True)
             for label in self._labels
             if label.object_id in object_ids and start <= label.started_at < end
         ]
@@ -144,10 +145,12 @@ def _is_fire_pattern(episode: IncidentEpisode) -> bool:
         return False
     types = {
         _SENSOR_CATEGORY.get(sensor_type.strip().casefold(), "other")
-        for sensor_type in episode.sensor_types
+        for sensor_type in episode.alarming_sensor_types
     }
     if "smoke" not in types:
         return False
     if types.intersection({"heat", "manual_call_point", "uir-r"}):
         return True
-    return "gas" in types and ("pump" in types or len(set(episode.channel_ids)) >= 3)
+    return "gas" in types and (
+        "pump" in types or len(set(episode.alarming_channel_ids)) >= 3
+    )

@@ -68,6 +68,8 @@ class IncidentEpisode(BaseModel):
     severity: str
     channel_ids: list[str]
     sensor_types: list[str]
+    alarming_channel_ids: list[str] = Field(default_factory=list)
+    alarming_sensor_types: list[str] = Field(default_factory=list)
     picket_from: float | None = None
     picket_to: float | None = None
     quality_flags: list[str] = Field(default_factory=list)

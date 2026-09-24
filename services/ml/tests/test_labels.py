@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 
+import polars as pl
 import pytest
 
 from fire_risk.contracts import (
@@ -10,6 +11,7 @@ from fire_risk.contracts import (
     IncidentLabel,
     LabelSource,
 )
+from fire_risk.data.episodes import build_episodes
 from fire_risk.data.labels import (
     DecisionJournalLabelProvider,
     LabelImportError,
@@ -26,17 +28,22 @@ def _episode(
     episode_id: str = "episode-42",
     object_id: str = "42",
     started_at: datetime = START,
+    channel_ids: list[str] | None = None,
     sensor_types: list[str] | None = None,
     quality_flags: list[str] | None = None,
 ) -> IncidentEpisode:
+    channels = channel_ids if channel_ids is not None else ["smoke-1", "heat-1"]
+    types = sensor_types if sensor_types is not None else ["smoke", "heat"]
     return IncidentEpisode(
         episode_id=episode_id,
         object_id=object_id,
         started_at=started_at,
         ended_at=started_at + timedelta(minutes=5),
         severity="alarm",
-        channel_ids=["smoke-1", "heat-1"],
-        sensor_types=sensor_types if sensor_types is not None else ["smoke", "heat"],
+        channel_ids=channels,
+        sensor_types=types,
+        alarming_channel_ids=channels,
+        alarming_sensor_types=types,
         quality_flags=quality_flags if quality_flags is not None else [],
     )
 
@@ -170,8 +177,11 @@ def test_proxy_uses_gas_pump_and_mass_alarm_composition() -> None:
     gas_and_pump = _episode(
         episode_id="gas-pump", sensor_types=["smoke", "gas", "pump"]
     )
-    mass_alarm = _episode(episode_id="mass", sensor_types=["smoke", "gas"])
-    mass_alarm.channel_ids = ["smoke-1", "smoke-2", "gas-1"]
+    mass_alarm = _episode(
+        episode_id="mass",
+        channel_ids=["smoke-1", "smoke-2", "gas-1"],
+        sensor_types=["smoke", "gas"],
+    )
     weak = _episode(episode_id="weak", sensor_types=["smoke", "gas"])
     no_smoke = _episode(episode_id="no-smoke", sensor_types=["gas", "pump"])
     provider = ProxyLabelProvider(
@@ -255,6 +265,7 @@ def test_journal_keeps_optional_incident_details() -> None:
                 "confirmed_at": confirmed_at.isoformat(),
                 "source": "imported",
                 "confidence": 0.85,
+                "rule_version": "dispatcher-v3",
             }
         ]
     )
@@ -267,3 +278,77 @@ def test_journal_keeps_optional_incident_details() -> None:
     assert label.confirmed_at == confirmed_at
     assert label.source is LabelSource.IMPORTED
     assert label.confidence == 0.85
+    assert label.rule_version == "dispatcher-v3"
+
+
+def test_journal_query_returns_independent_label_objects() -> None:
+    provider = DecisionJournalLabelProvider(
+        [
+            {
+                "incident_id": "dispatch-9",
+                "object_id": "42",
+                "started_at": START,
+                "decision": "confirmed_fire",
+                "incident_type": "fire",
+            }
+        ]
+    )
+    first = provider.get_incidents(START, START + timedelta(hours=1), {"42"})[0]
+    first.incident_type = "changed by caller"
+    first.confidence = 0.1
+
+    second = provider.get_incidents(START, START + timedelta(hours=1), {"42"})[0]
+
+    assert second is not first
+    assert second.incident_type == "fire"
+    assert second.confidence == 1.0
+
+
+def test_proxy_uses_only_alarming_event_composition_from_built_episodes() -> None:
+    event_specs = [
+        ("1", 0, "smoke-1", "smoke", False),
+        ("2", 1, "heat-1", "heat", False),
+        ("3", 2, "door-1", "door", True),
+        ("4", 40, "smoke-2", "smoke", True),
+        ("5", 41, "gas-1", "gas", True),
+        ("6", 42, "door-2", "door", False),
+        ("7", 80, "smoke-3", "smoke", True),
+        ("8", 81, "heat-2", "heat", True),
+    ]
+    events = pl.DataFrame(
+        {
+            "event_id": [row[0] for row in event_specs],
+            "channel_id": [row[2] for row in event_specs],
+            "object_id": ["42"] * len(event_specs),
+            "registered_at": [START + timedelta(minutes=row[1]) for row in event_specs],
+            "sensor_type": [row[3] for row in event_specs],
+            "alarm_flag": [row[4] for row in event_specs],
+            "picket_sort_key": [None] * len(event_specs),
+            "quality_flags": [[] for _ in event_specs],
+        }
+    ).lazy()
+    episodes_frame, _ = build_episodes(events, timedelta(minutes=30))
+    episodes = [
+        IncidentEpisode.model_validate(row)
+        for row in episodes_frame.collect().to_dicts()
+    ]
+    provider = ProxyLabelProvider(ProxyLabelConfig(episodes=episodes))
+
+    labels = provider.get_incidents(START, START + timedelta(hours=2), {"42"})
+
+    assert [label.started_at for label in labels] == [START + timedelta(minutes=80)]
+
+
+def test_proxy_ignores_legacy_episode_without_alarm_composition() -> None:
+    episode = IncidentEpisode(
+        episode_id="legacy",
+        object_id="42",
+        started_at=START,
+        ended_at=START + timedelta(minutes=5),
+        severity="alarm",
+        channel_ids=["smoke-1", "heat-1"],
+        sensor_types=["smoke", "heat"],
+    )
+    provider = ProxyLabelProvider(ProxyLabelConfig(episodes=[episode]))
+
+    assert provider.get_incidents(START, START + timedelta(hours=1), {"42"}) == []

@@ -50,6 +50,18 @@ def build_episodes(
             .alias("severity"),
             pl.col("channel_id").drop_nulls().unique().sort().alias("channel_ids"),
             pl.col("sensor_type").drop_nulls().unique().sort().alias("sensor_types"),
+            pl.col("channel_id")
+            .filter(pl.col("alarm_flag"))
+            .drop_nulls()
+            .unique()
+            .sort()
+            .alias("alarming_channel_ids"),
+            pl.col("sensor_type")
+            .filter(pl.col("alarm_flag"))
+            .drop_nulls()
+            .unique()
+            .sort()
+            .alias("alarming_sensor_types"),
             pl.col("picket_sort_key").min().alias("picket_from"),
             pl.col("picket_sort_key").max().alias("picket_to"),
             pl.col("quality_flags")
@@ -68,6 +80,8 @@ def build_episodes(
             "severity",
             "channel_ids",
             "sensor_types",
+            "alarming_channel_ids",
+            "alarming_sensor_types",
             "picket_from",
             "picket_to",
             "quality_flags",

@@ -103,6 +103,8 @@ def test_episode_aggregates_distinct_channels_types_pickets_flags_and_alarm() ->
     assert row["severity"] == "alarm"
     assert row["channel_ids"] == ["a", "z"]
     assert row["sensor_types"] == ["heat", "smoke"]
+    assert row["alarming_channel_ids"] == ["a"]
+    assert row["alarming_sensor_types"] == ["heat"]
     assert row["picket_from"] == 3.0
     assert row["picket_to"] == 8.0
     assert row["quality_flags"] == ["burst", "unknown_state"]
@@ -124,7 +126,9 @@ def test_empty_quality_flags_aggregate_to_empty_list() -> None:
 
 
 def test_all_unknown_objects_produce_only_null_membership() -> None:
-    events = _events(0, 1).with_columns(pl.lit(None, dtype=pl.String).alias("object_id"))
+    events = _events(0, 1).with_columns(
+        pl.lit(None, dtype=pl.String).alias("object_id")
+    )
 
     episodes, membership = build_episodes(events, timedelta(minutes=30))
 
@@ -146,5 +150,8 @@ def test_episode_ids_and_output_order_are_independent_of_input_order() -> None:
     )
 
     assert first_episodes.collect().to_dicts() == reversed_episodes.collect().to_dicts()
-    assert first_membership.collect().to_dicts() == reversed_membership.collect().to_dicts()
+    assert (
+        first_membership.collect().to_dicts()
+        == reversed_membership.collect().to_dicts()
+    )
     assert first_episodes.collect()["episode_id"].n_unique() == 2
