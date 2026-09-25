@@ -818,12 +818,18 @@ def run_full(config: FullRunConfig) -> RunResult:
 
             store.run(STAGES[index], {}, write_inventory)
 
+        episode_products: tuple[pl.LazyFrame, pl.LazyFrame] | None = None
+
         def episodes_and_membership() -> tuple[pl.LazyFrame, pl.LazyFrame]:
-            return build_episodes(
-                normalized,
-                timedelta(minutes=config.settings.episode_gap_minutes),
-                methane_alarm_percent=config.settings.methane_alarm_percent,
-            )
+            nonlocal episode_products
+            if episode_products is None:
+                episode_products = build_episodes(
+                    normalized,
+                    timedelta(minutes=config.settings.episode_gap_minutes),
+                    methane_alarm_percent=config.settings.methane_alarm_percent,
+                    temp_dir=temp / "episode-products",
+                )
+            return episode_products
 
         episode_path = store.run(
             STAGES[6],

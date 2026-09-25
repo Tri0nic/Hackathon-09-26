@@ -341,6 +341,26 @@ def test_disk_backed_normalized_sink_has_no_global_wide_sort(
     assert "parquet-sink" in plans[0], plans[0]
 
 
+def test_full_run_shares_bounded_episode_products_between_stages(
+    pipeline, full_config, monkeypatch
+):
+    original = pipeline.build_episodes
+    calls = []
+
+    def bounded(events, gap, **kwargs):
+        assert kwargs.get("temp_dir") is not None, (
+            "Episode event windows must be bounded"
+        )
+        assert kwargs["temp_dir"].is_relative_to(full_config.temp_dir)
+        calls.append(kwargs["temp_dir"])
+        return original(events, gap, **kwargs)
+
+    monkeypatch.setattr(pipeline, "build_episodes", bounded)
+    result = pipeline.run_full(full_config)
+    assert len(calls) == 1
+    assert pl.read_parquet(result.directory / STAGES[7]).height == 16
+
+
 def test_explicit_temp_directory_contains_csv_spools_and_environment_is_restored(
     pipeline, full_config, monkeypatch
 ):
