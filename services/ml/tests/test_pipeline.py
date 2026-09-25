@@ -361,6 +361,28 @@ def test_full_run_shares_bounded_episode_products_between_stages(
     assert pl.read_parquet(result.directory / STAGES[7]).height == 16
 
 
+def test_full_run_bounds_feature_and_target_event_plans(
+    pipeline, full_config, monkeypatch
+):
+    feature_builder = pipeline.build_feature_snapshots
+    target_builder = pipeline.attach_horizon_targets
+
+    def features(*args, **kwargs):
+        assert kwargs.get("temp_dir") is not None, "Features require bounded execution"
+        return feature_builder(*args, **kwargs)
+
+    def targets(*args, **kwargs):
+        assert kwargs.get("temp_dir") is not None, (
+            "Wide target joins require bounded execution"
+        )
+        return target_builder(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "build_feature_snapshots", features)
+    monkeypatch.setattr(pipeline, "attach_horizon_targets", targets)
+    result = pipeline.run_full(full_config)
+    assert (result.directory / "60-feature-snapshots.parquet").exists()
+
+
 def test_explicit_temp_directory_contains_csv_spools_and_environment_is_restored(
     pipeline, full_config, monkeypatch
 ):

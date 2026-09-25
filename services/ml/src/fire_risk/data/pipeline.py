@@ -864,9 +864,13 @@ def run_full(config: FullRunConfig) -> RunResult:
                 config.settings,
                 scan_channel_reference(config.channels),
                 thresholds=thresholds,
+                temp_dir=temp / "feature-products",
             )
             attach_horizon_targets(
-                features, local_labels, config.observed_until.astimezone(timezone)
+                features,
+                local_labels,
+                config.observed_until.astimezone(timezone),
+                temp_dir=temp / "target-products",
             ).with_columns(
                 pl.col("scoring_timestamp").dt.convert_time_zone("UTC")
             ).sink_parquet(path)

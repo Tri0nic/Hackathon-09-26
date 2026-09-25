@@ -1,6 +1,7 @@
 """Lazy, history-only object snapshots; incident targets attach separately."""
 
 from datetime import datetime
+from pathlib import Path
 
 import polars as pl
 
@@ -23,7 +24,10 @@ _KEYS = ["object_id", "scoring_timestamp"]
 
 
 def _feature_events(
-    events: pl.LazyFrame, thresholds: QualityThresholds
+    events: pl.LazyFrame,
+    thresholds: QualityThresholds,
+    *,
+    profiles: pl.LazyFrame | None = None,
 ) -> pl.LazyFrame:
     names = events.collect_schema().names()
     optional = {
@@ -77,7 +81,9 @@ def _feature_events(
         )
         events = causal_quality_flags(
             mark_historical_artifacts(
-                history, profile_channel_days(history), thresholds
+                history,
+                profiles if profiles is not None else profile_channel_days(history),
+                thresholds,
             ),
             thresholds,
         )
@@ -537,6 +543,7 @@ def build_feature_snapshots(
     inventory: pl.LazyFrame | None = None,
     *,
     thresholds: QualityThresholds,
+    temp_dir: Path | None = None,
 ) -> pl.LazyFrame:
     """Build a per-object grid from floor(first event) to ceil(last event).
 
@@ -556,6 +563,10 @@ def build_feature_snapshots(
     """
     if config.scoring_step_minutes <= 0:
         raise ValueError("scoring_step_minutes must be positive")
+    if temp_dir is not None:
+        from fire_risk.data.features_bounded import bounded_features
+
+        return bounded_features(events, config, inventory, thresholds, temp_dir)
     source = _feature_events(events, thresholds)
     step = f"{config.scoring_step_minutes}m"
     bounds = (
@@ -647,7 +658,11 @@ def build_feature_snapshots(
 
 
 def attach_horizon_targets(
-    snapshots: pl.LazyFrame, incidents: pl.LazyFrame, observed_until: datetime
+    snapshots: pl.LazyFrame,
+    incidents: pl.LazyFrame,
+    observed_until: datetime,
+    *,
+    temp_dir: Path | None = None,
 ) -> pl.LazyFrame:
     """Attach active [start, end) and cumulative future (t, t+h] targets.
 
@@ -662,9 +677,13 @@ def attach_horizon_targets(
     transitively within each object. The earliest incident (ties use its ID)
     names the component, independent of input order and selected snapshots.
     """
-    names = incidents.collect_schema().names()
     if observed_until.tzinfo is None or observed_until.utcoffset() is None:
         raise ValueError("observed_until must be timezone-aware")
+    if temp_dir is not None:
+        from fire_risk.data.features_bounded import bounded_targets
+
+        return bounded_targets(snapshots, incidents, observed_until, temp_dir)
+    names = incidents.collect_schema().names()
     if "decision" in names:
         positive = pl.col("decision") == "confirmed_fire"
         if "source" in names:
