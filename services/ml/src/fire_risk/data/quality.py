@@ -155,7 +155,7 @@ def mark_historical_artifacts(
     ):
         keys.append("source_year")
     joined = events.with_columns(pl.col("registered_at").dt.date().alias("day")).join(
-        profiles, on=keys, how="left"
+        profiles, on=keys, how="left", maintain_order="left"
     )
     burst = (pl.col("event_count") >= thresholds.min_burst_events) & (
         (pl.col("max_repeats_per_second") >= thresholds.max_repeats_per_second)

@@ -281,7 +281,7 @@ def _attach_device_metadata(
         .collect(engine="streaming")
         .lazy()
     )
-    return events.join(metadata, on="channel_id", how="left")
+    return events.join(metadata, on="channel_id", how="left", maintain_order="left")
 
 
 def _proxy_labels(episodes: pl.LazyFrame, observed_until: datetime) -> pl.LazyFrame:
@@ -799,10 +799,10 @@ def run_full(config: FullRunConfig) -> RunResult:
             normalized = mark_historical_artifacts(
                 normalized, pl.scan_parquet(application_profile_path), thresholds
             )
+            # Consumers impose their own chronological/object ordering. Keep
+            # deterministic source order here instead of sorting the wide corpus.
             normalized.with_columns(
                 pl.col("registered_at").dt.convert_time_zone("UTC")
-            ).sort(
-                ["registered_at", "event_id", "source_file", "source_row"]
             ).sink_parquet(path)
 
         normalized_path = store.run(

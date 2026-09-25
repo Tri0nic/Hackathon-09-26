@@ -284,6 +284,63 @@ def test_no_resume_rebuild_has_identical_parquet_hashes_and_nonclock_json(
             assert sha256(original[name]).hexdigest() == sha256(after).hexdigest(), name
 
 
+def test_normalized_output_preserves_values_source_order_and_rebuild_hash(
+    pipeline, full_config
+):
+    for path in full_config.events:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        lines[1:3] = reversed(lines[1:3])
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    first = pipeline.run_full(full_config)
+    path = first.directory / STAGES[3]
+    original = path.read_bytes()
+    actual = pl.read_parquet(path)
+    assert actual["event_id"].to_list() == [
+        f"{year}-{number}" for year in range(2019, 2027) for number in (2, 1)
+    ]
+    assert actual["raw_value"].to_list() == ["40", "Обнаружен дым"] * 8
+    assert actual["numeric_value"].to_list() == [40.0, None] * 8
+    assert actual["alarm_flag"].to_list() == [True] * 16
+    assert actual["source_year"].to_list() == [
+        year for year in range(2019, 2027) for _ in range(2)
+    ]
+    pipeline.run_full(replace(full_config, resume=False))
+    assert sha256(original).hexdigest() == sha256(path.read_bytes()).hexdigest()
+
+
+def test_disk_backed_normalized_sink_has_no_global_wide_sort(
+    pipeline, full_config, monkeypatch
+):
+    sink = pl.LazyFrame.sink_parquet
+    plans = []
+
+    def observe(frame, path, *args, **kwargs):
+        if isinstance(path, Path) and path.name.startswith(".30-normalized-events"):
+            query = sink(frame, path, lazy=True)
+            physical = query.show_graph(
+                show=False, raw_output=True, engine="streaming", plan_stage="physical"
+            )
+            plans.append(
+                "\n".join(
+                    line
+                    for line in physical.splitlines()
+                    if any(
+                        node in line
+                        for node in ('label="sort', "sink", "in-memory-join")
+                    )
+                )
+            )
+        return sink(frame, path, *args, **kwargs)
+
+    monkeypatch.setattr(pl.LazyFrame, "sink_parquet", observe)
+    pipeline.run_full(full_config)
+    assert len(plans) == 1
+    assert 'label="sort' not in plans[0], plans[0]
+    assert "in-memory-sink" not in plans[0], plans[0]
+    assert "in-memory-join" not in plans[0], plans[0]
+    assert "parquet-sink" in plans[0], plans[0]
+
+
 def test_explicit_temp_directory_contains_csv_spools_and_environment_is_restored(
     pipeline, full_config, monkeypatch
 ):

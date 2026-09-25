@@ -73,7 +73,11 @@ def _reference_columns(
             f"Invalid reference schema for {path}: missing={missing}; "
             f"unexpected={unexpected}; duplicate={duplicates}"
         )
-    return dict(russian) if expected == source_names else {name: name for name in canonical}
+    return (
+        dict(russian)
+        if expected == source_names
+        else {name: name for name in canonical}
+    )
 
 
 def scan_channel_reference(path: Path) -> pl.LazyFrame:
@@ -96,7 +100,14 @@ def scan_channel_reference(path: Path) -> pl.LazyFrame:
 def scan_state_reference(path: Path) -> pl.LazyFrame:
     """Read, normalize, and consolidate state-reference mappings."""
     columns = _reference_columns(path, STATE_RU_TO_CANONICAL)
-    alarm_tokens = {"true": True, "t": True, "1": True, "false": False, "f": False, "0": False}
+    alarm_tokens = {
+        "true": True,
+        "t": True,
+        "1": True,
+        "false": False,
+        "f": False,
+        "0": False,
+    }
     reference = pl.scan_csv(path, infer_schema=False).select(
         [pl.col(source).alias(target) for source, target in columns.items()]
     )
@@ -116,8 +127,7 @@ def scan_state_reference(path: Path) -> pl.LazyFrame:
             "expected true/t/1 or false/f/0"
         )
     return (
-        reference
-        .with_columns(
+        reference.with_columns(
             pl.col("state_set_id").cast(pl.String),
             pl.col("alarm_flag")
             .str.to_lowercase()
@@ -192,7 +202,9 @@ def join_channels(events: pl.LazyFrame, channels: Path) -> pl.LazyFrame:
         events = events.with_columns(
             pl.lit([], dtype=pl.List(pl.String)).alias("quality_flags")
         )
-    return events.join(reference, on="channel_id", how="left").with_columns(
+    return events.join(
+        reference, on="channel_id", how="left", maintain_order="left"
+    ).with_columns(
         pl.when(pl.col("object_id").is_null())
         .then(pl.concat_list("quality_flags", pl.lit(["unknown_channel"])))
         .otherwise(pl.col("quality_flags"))
