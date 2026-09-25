@@ -406,9 +406,9 @@ def _window_features(window: str, config: PipelineConfig) -> list[pl.Expr]:
 def _freshness_partition(
     events: pl.LazyFrame, grid: pl.LazyFrame, inventory: pl.LazyFrame
 ) -> pl.LazyFrame:
-    """Union one channel's closed 24h intervals, then count active intervals.
+    """Union one channel's half-open 24h intervals, then count active intervals.
 
-    This equals testing its last observation <= t against t - 24h, without a
+    This equals testing t - 24h < last observation <= t, without a
     channel x snapshot product. At most E intervals and 2E endpoint records
     exist per object. A future event can extend an interval only through a
     period that was already fresh; no earlier snapshot changes.
@@ -443,7 +443,7 @@ def _freshness_partition(
     )
     families = ["all", *SIGNAL_FAMILIES]
     result = grid.rename({"registered_at": "scoring_timestamp"}).sort(_KEYS)
-    for endpoint, inclusive in [("start", True), ("end", False)]:
+    for endpoint, inclusive in [("start", True), ("end", True)]:
         counts = (
             intervals.group_by("object_id", f"_{endpoint}")
             .agg(
@@ -558,7 +558,7 @@ def build_feature_snapshots(
     exclusion annotations can only exclude completed days from the baseline.
     No incident, label, or current whole-day profile enters a window feature.
     When the canonical channel reference is provided as inventory, freshness
-    uses [t - 24h, t] inclusively. Never-observed channels are stale. Omitting
+    uses (t - 24h, t]. Never-observed channels are stale. Omitting
     inventory preserves the legacy feature schema, without inferring a reference.
     """
     if config.scoring_step_minutes <= 0:

@@ -21,14 +21,17 @@ _SENSOR_CATEGORY = {
     "датчик дыма": "smoke",
     "heat": "heat",
     "датчик температуры": "heat",
+    "тепловой датчик": "heat",
     "manual_call_point": "manual_call_point",
     "ручной извещатель": "manual_call_point",
     "uir-r": "uir-r",
     "уир-р": "uir-r",
+    "состояние уир-р": "uir-r",
     "gas": "gas",
     "газовый датчик": "gas",
     "pump": "pump",
     "насос": "pump",
+    "состояние насоса": "pump",
 }
 
 

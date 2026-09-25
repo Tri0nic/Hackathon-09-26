@@ -7,6 +7,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from fire_risk.data.inventory import build_object_inventory
+from fire_risk.data.references import scan_channel_reference
 
 
 def reference() -> pl.LazyFrame:
@@ -56,3 +57,40 @@ def test_empty_reference_retains_typed_inventory_tables() -> None:
     assert by_type.collect().is_empty()
     assert totals.collect_schema()["inventory_channel_count"] == pl.Int64
     assert by_type.collect_schema()["channel_count"] == pl.Int64
+
+
+def test_authoritative_russian_headers_and_types_populate_signal_families(
+    tmp_path: Path,
+) -> None:
+    types = [
+        "Тепловой датчик",
+        "Датчик температуры",
+        "Состояние УИР-Р",
+        "Состояние насоса",
+    ]
+    path = tmp_path / "reference.csv"
+    pl.DataFrame(
+        {
+            "ид_канала_данных": ["h1", "h2", "u", "p"],
+            "тип_инж_системы": ["fire"] * 4,
+            "тип_датчика": types,
+            "название_датчика": types,
+            "ид_объект": ["mine"] * 4,
+            "иерархия_уровень": [3] * 4,
+            "диспетчерское_название_объекта": ["mine"] * 4,
+            "объект_ур2": ["2"] * 4,
+            "объект_ур2_имя": ["two"] * 4,
+            "объект_ур1": ["1"] * 4,
+            "объект_ур1_имя": ["one"] * 4,
+            "родитель": ["2"] * 4,
+            "Имя": types,
+        }
+    ).write_csv(path)
+    totals, raw_types = build_object_inventory(scan_channel_reference(path))
+    assert totals.select(
+        "inventory_channel_count",
+        "inventory_heat_channel_count",
+        "inventory_uir_channel_count",
+        "inventory_pump_channel_count",
+    ).collect().row(0) == (4, 2, 1, 1)
+    assert set(raw_types.collect()["sensor_type"]) == set(types)

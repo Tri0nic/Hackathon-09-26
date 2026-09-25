@@ -271,6 +271,27 @@ def test_proxy_recognizes_source_sensor_type_names() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "sensor,rule",
+    [
+        ("Тепловой датчик", "smoke_heat"),
+        ("Датчик температуры", "smoke_heat"),
+        ("Состояние УИР-Р", "smoke_uir_r"),
+        ("Состояние насоса", "smoke_supporting_pump"),
+    ],
+)
+def test_proxy_recognizes_authoritative_russian_smoke_pairs(
+    sensor: str, rule: str
+) -> None:
+    episode = _episode(sensor_types=["Датчик дыма", sensor])
+    provider = ProxyLabelProvider(
+        ProxyLabelConfig(episodes=[episode], observed_until=OBSERVED_UNTIL)
+    )
+    labels = provider.get_incidents(START, START + timedelta(hours=1), {"42"})
+    assert len(labels) == 1
+    assert labels[0].rule_id == rule
+
+
 @pytest.mark.parametrize("provider_kind", ["proxy", "journal"])
 def test_providers_reject_naive_or_reversed_period(provider_kind: str) -> None:
     provider: LabelProvider

@@ -125,7 +125,7 @@ def test_freshness_uses_reference_denominator_and_never_seen_channels() -> None:
     )
 
 
-def test_freshness_includes_exact_24h_boundary_and_handles_repeated_events() -> None:
+def test_freshness_excludes_exact_24h_boundary_and_handles_repeated_events() -> None:
     inventory = pl.DataFrame(
         {
             "object_id": ["mine"] * 5,
@@ -145,8 +145,8 @@ def test_freshness_includes_exact_24h_boundary_and_handles_repeated_events() -> 
         .alias("registered_at")
     )
     current = at_start(build_feature_snapshots(source, PipelineConfig(), inventory))
-    assert current["fresh_channel_count"].item() == 3
-    assert current["stale_channel_count"].item() == 2
+    assert current["fresh_channel_count"].item() == 2
+    assert current["stale_channel_count"].item() == 3
 
 
 def test_inventory_empty_or_unmatched_does_not_invent_observed_inventory() -> None:
@@ -251,7 +251,7 @@ def test_freshness_intermediates_are_bounded_by_events_and_snapshots(
         pl.col("scoring_timestamp") == START + timedelta(hours=24, minutes=15)
     )
     assert first["fresh_channel_count"].to_list() == [64] * 4
-    assert exact["fresh_channel_count"].to_list() == [64] * 4
+    assert exact["fresh_channel_count"].to_list() == [0] * 4
     assert expired["fresh_channel_count"].to_list() == [0] * 4
 
 
@@ -277,8 +277,34 @@ def test_freshness_unions_touching_intervals_and_reactivates_after_a_gap() -> No
     result = feature_module._freshness_features(
         source.reverse(), grid, reference
     ).collect()
-    assert result["fresh_channel_count"].to_list() == [2, 2, 1, 1, 0, 1, 1, 0]
-    assert result["stale_channel_count"].to_list() == [1, 1, 2, 2, 3, 2, 2, 3]
+    assert result["fresh_channel_count"].to_list() == [2, 1, 1, 0, 0, 1, 0, 0]
+    assert result["stale_channel_count"].to_list() == [1, 2, 2, 3, 3, 2, 3, 3]
+
+
+def test_authoritative_types_drive_windows_and_freshness() -> None:
+    types = [
+        "Датчик дыма",
+        "Тепловой датчик",
+        "Датчик температуры",
+        "Состояние УИР-Р",
+        "Состояние насоса",
+    ]
+    source = events([0] * 5).with_columns(
+        pl.Series("sensor_type", types),
+        pl.Series("numeric_value", [None, 40.0, 42.0, None, None]),
+    )
+    inventory = source.select("object_id", "channel_id", "sensor_type")
+    current = at_start(
+        build_feature_snapshots(source, PipelineConfig(), inventory)
+    ).row(0, named=True)
+    assert current["temperature_max_5m"] == 42.0
+    assert current["temperature_mean_5m"] == 41.0
+    assert current["smoke_heat_5m"] is True
+    assert current["smoke_uir_5m"] is True
+    assert current["pump_alarm_5m"] is True
+    assert current["fresh_heat_channel_count"] == 2
+    assert current["fresh_uir_channel_count"] == 1
+    assert current["fresh_pump_channel_count"] == 1
 
 
 def state_events(
