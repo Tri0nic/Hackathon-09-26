@@ -18,9 +18,9 @@ def with_synthetic_targets(source: pl.LazyFrame) -> pl.LazyFrame:
         / float(2**64 - 1)
     )
     settings = {
-        "now": (5.0, 5.0),
-        "6h": (4.0, 4.0),
-        "12h": (3.0, 3.2),
+        "now": (5.0, 2.0),
+        "6h": (4.0, 1.3),
+        "12h": (3.0, 1.23),
         "24h": (2.5, 1.22),
     }
     expressions = []

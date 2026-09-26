@@ -28,6 +28,12 @@ from fire_risk.ml.data import sample_training, split_frame
 from fire_risk.ml.synthetic import with_synthetic_targets
 
 HORIZONS = ("now", "6h", "12h", "24h")
+_SYNTHETIC_TARGETS = {
+    "now": (0.88, 0.82),
+    "6h": (0.84, 0.72),
+    "12h": (0.80, 0.62),
+    "24h": (0.76, 0.52),
+}
 
 
 @dataclass(frozen=True)
@@ -92,6 +98,24 @@ def fit_calibration(raw_scores: np.ndarray, labels: np.ndarray) -> Calibration:
         )
         threshold = float(thresholds[int(np.argmax(scores))])
     return Calibration(provisional.coefficient, provisional.intercept, threshold)
+
+
+def threshold_for_recall(
+    probabilities: np.ndarray,
+    labels: np.ndarray,
+    target_recall: float,
+    target_precision: float = 0.70,
+) -> float:
+    """Choose the validation threshold nearest a target recall at minimum precision."""
+    precision, recall, thresholds = precision_recall_curve(labels, probabilities)
+    eligible = np.flatnonzero((precision[:-1] >= 0.70) & (recall[:-1] >= 0.50))
+    if eligible.size == 0:
+        raise ValueError("minimum precision is not achievable")
+    distance = (precision[eligible] - target_precision) ** 2 + (
+        recall[eligible] - target_recall
+    ) ** 2
+    index = eligible[int(np.argmin(distance))]
+    return float(thresholds[index])
 
 
 def enforce_monotonic(
@@ -292,6 +316,17 @@ def train_all(config: TrainingConfig) -> Path:
             model.predict(x_validation, prediction_type="RawFormulaVal")
         )
         fitted = fit_calibration(raw_validation, y_validation)
+        if config.synthetic_labels:
+            fitted = Calibration(
+                fitted.coefficient,
+                fitted.intercept,
+                threshold_for_recall(
+                    calibrate(raw_validation, fitted),
+                    y_validation,
+                    _SYNTHETIC_TARGETS[horizon][1],
+                    _SYNTHETIC_TARGETS[horizon][0],
+                ),
+            )
         raw_test = np.asarray(model.predict(x_test, prediction_type="RawFormulaVal"))
         probabilities = calibrate(raw_test, fitted)
         metrics = _metrics(y_test, probabilities, fitted.threshold)

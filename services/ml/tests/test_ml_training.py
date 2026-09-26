@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-
 from fire_risk.ml.training import (
     Calibration,
     TrainingConfig,
@@ -8,7 +7,18 @@ from fire_risk.ml.training import (
     calibrate,
     enforce_monotonic,
     fit_calibration,
+    threshold_for_recall,
 )
+
+
+def test_threshold_for_recall_keeps_minimum_precision() -> None:
+    labels = np.array([0, 0, 0, 1, 1, 1])
+    probabilities = np.array([0.1, 0.2, 0.4, 0.5, 0.8, 0.9])
+
+    threshold = threshold_for_recall(probabilities, labels, target_recall=2 / 3)
+    predictions = probabilities >= threshold
+
+    assert predictions.tolist() == [False, False, False, False, True, True]
 
 
 def test_calibration_produces_probabilities_and_validation_threshold() -> None:
