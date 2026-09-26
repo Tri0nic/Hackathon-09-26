@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import polars as pl
 
@@ -10,12 +10,12 @@ def _snapshots() -> pl.LazyFrame:
         {
             "object_id": ["a", "a", "b", "c", "d", "e"],
             "scoring_timestamp": [
-                datetime(2024, 12, 31, 23, tzinfo=timezone.utc),
-                datetime(2025, 1, 1, tzinfo=timezone.utc),
-                datetime(2024, 6, 1, tzinfo=timezone.utc),
-                datetime(2025, 6, 1, tzinfo=timezone.utc),
-                datetime(2026, 6, 1, tzinfo=timezone.utc),
-                datetime(2025, 7, 1, tzinfo=timezone.utc),
+                datetime(2024, 12, 31, 23, tzinfo=UTC),
+                datetime(2025, 1, 1, tzinfo=UTC),
+                datetime(2024, 6, 1, tzinfo=UTC),
+                datetime(2025, 6, 1, tzinfo=UTC),
+                datetime(2026, 6, 1, tzinfo=UTC),
+                datetime(2025, 7, 1, tzinfo=UTC),
             ],
             "signal": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             "flag": [True, False, True, False, True, False],
@@ -50,7 +50,7 @@ def test_class_aware_sampling_is_bounded_balanced_and_deterministic() -> None:
         {
             "object_id": [f"o-{i}" for i in range(24)],
             "scoring_timestamp": [
-                datetime(2024, 1, 1, tzinfo=timezone.utc)
+                datetime(2024, 1, 1, tzinfo=UTC)
             ] * 24,
             "target_6h": [True] * 4 + [False] * 20,
             "signal": list(range(24)),

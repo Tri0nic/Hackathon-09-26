@@ -80,7 +80,45 @@ def sample_training(
     """Select a deterministic balanced subset without depending on input order."""
     if max_rows <= 0:
         raise ValueError("max_rows must be positive")
-    data = frame.collect() if isinstance(frame, pl.LazyFrame) else frame
+    if isinstance(frame, pl.LazyFrame):
+        names = frame.collect_schema().names()
+        hash_columns = [
+            name for name in ("object_id", "scoring_timestamp", target) if name in names
+        ]
+        counts = dict(
+            frame.filter(pl.col(target).is_not_null())
+            .group_by(target)
+            .len()
+            .collect()
+            .iter_rows()
+        )
+        positive_quota = min(int(counts.get(True, 0)), max_rows // 2)
+        negative_quota = min(
+            int(counts.get(False, 0)), max_rows - positive_quota
+        )
+        positive_quota = min(
+            int(counts.get(True, 0)), max_rows - negative_quota
+        )
+
+        def bounded(label: bool, quota: int) -> pl.DataFrame:
+            count = int(counts.get(label, 0))
+            selected = frame.filter(pl.col(target) == label)
+            if 0 < quota < count:
+                fraction = min(1.0, (quota / count) * 1.25)
+                threshold = int(((2**64) - 1) * fraction)
+                selected = selected.filter(
+                    pl.struct(hash_columns).hash(seed=seed)
+                    <= pl.lit(threshold, dtype=pl.UInt64)
+                )
+            return selected.head(quota).collect()
+
+        sampled = pl.concat(
+            [bounded(True, positive_quota), bounded(False, negative_quota)],
+            how="vertical",
+        )
+        return sampled.sort(["scoring_timestamp", "object_id"])
+
+    data = frame
     data = data.filter(pl.col(target).is_not_null())
     hash_columns = [
         name

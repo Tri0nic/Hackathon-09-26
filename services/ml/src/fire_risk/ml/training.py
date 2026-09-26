@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import time
 from dataclasses import asdict, dataclass
@@ -15,9 +14,9 @@ from typing import Any
 
 import numpy as np
 import polars as pl
-from catboost import CatBoostClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import (
+from catboost import CatBoostClassifier  # type: ignore[import-untyped]
+from sklearn.linear_model import LogisticRegression  # type: ignore[import-untyped]
+from sklearn.metrics import (  # type: ignore[import-untyped]
     average_precision_score,
     brier_score_loss,
     precision_recall_curve,
@@ -45,6 +44,7 @@ class TrainingConfig:
     seed: int = 42
     train_max_rows: int = 1_000_000
     calibration_max_rows: int = 300_000
+    test_max_rows: int | None = None
     iterations: int = 600
     depth: int = 8
     learning_rate: float = 0.08
@@ -129,13 +129,17 @@ def _input_identity(path: Path) -> dict[str, Any]:
 
 
 def _cap_rows(frame: pl.LazyFrame, max_rows: int, seed: int) -> pl.DataFrame:
+    count = frame.select(pl.len()).collect().item()
+    if count <= max_rows:
+        return frame.collect()
+    fraction = min(1.0, (max_rows / count) * 1.25)
+    threshold = int(((2**64) - 1) * fraction)
     return (
-        frame.with_columns(
-            pl.struct("object_id", "scoring_timestamp").hash(seed=seed).alias("_rank")
+        frame.filter(
+            pl.struct("object_id", "scoring_timestamp").hash(seed=seed)
+            <= pl.lit(threshold, dtype=pl.UInt64)
         )
-        .sort("_rank")
         .head(max_rows)
-        .drop("_rank")
         .collect()
     )
 
@@ -184,7 +188,11 @@ def _config_payload(config: TrainingConfig) -> dict[str, Any]:
 
 
 def _signature(config: TrainingConfig, identity: dict[str, Any], features: list[str]) -> str:
-    payload = {"config": _config_payload(config), "input": identity, "features": features}
+    payload: dict[str, Any] = {
+        "config": _config_payload(config),
+        "input": identity,
+        "features": features,
+    }
     payload["config"].pop("resume", None)
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
@@ -219,7 +227,11 @@ def train_all(config: TrainingConfig) -> Path:
         target = f"target_{horizon}"
         train = sample_training(split.train, target, config.train_max_rows, config.seed)
         validation = _cap_rows(split.validation, config.calibration_max_rows, config.seed)
-        test = split.test.collect()
+        test = (
+            _cap_rows(split.test, config.test_max_rows, config.seed)
+            if config.test_max_rows is not None
+            else split.test.collect()
+        )
         if train[target].n_unique() != 2:
             raise ValueError(f"{horizon} train data must contain both classes")
         if validation[target].n_unique() != 2:
@@ -251,6 +263,7 @@ def train_all(config: TrainingConfig) -> Path:
             verbose=config.progress_interval,
         )
         model.fit(x_train, y_train, eval_set=(x_validation, y_validation))
+        model.set_feature_names(features)
         raw_validation = np.asarray(
             model.predict(x_validation, prediction_type="RawFormulaVal")
         )
@@ -300,7 +313,7 @@ def train_all(config: TrainingConfig) -> Path:
         "packages": {
             "catboost": version("catboost"),
             "numpy": version("numpy"),
-            "polars": version("polars"),
+            "polars": pl.__version__,
             "scikit-learn": version("scikit-learn"),
         },
         "horizons": manifest_horizons,

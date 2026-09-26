@@ -12,6 +12,24 @@ python -m ruff check src tests
 python -m mypy src
 ```
 
+## Train the CatBoost baseline
+
+Training runs `now`, `6h`, `12h`, and `24h` sequentially, saving each completed
+model before starting the next one. `--resume` reuses matching completed models.
+Run from `services/ml`:
+
+```powershell
+..\..\.venv\python.exe -m fire_risk.ml_cli train `
+  --input "D:\AndrewProgramming\GithubProjects\Hackathon-09-26\.artifacts\full-2019-2026-v2\acceptance\60-feature-snapshots.parquet" `
+  --output "D:\AndrewProgramming\GithubProjects\Hackathon-09-26\.artifacts\ml\catboost-v1" `
+  --task-type GPU `
+  --resume
+```
+
+The output directory contains four `.cbm` models, per-horizon metadata,
+`manifest.json`, and `metrics.json`. Reported metrics reproduce reconstructed
+proxy labels and are not evidence of confirmed real-fire detection quality.
+
 On Windows, installation includes the `tzdata` runtime dependency so Python's
 `ZoneInfo` can resolve `Europe/Moscow` even without a system IANA timezone
 database. Re-run the editable installation command when updating an existing
