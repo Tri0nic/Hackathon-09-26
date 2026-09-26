@@ -21,10 +21,18 @@ def with_synthetic_targets(source: pl.LazyFrame) -> pl.LazyFrame:
         "now": (5.0, 5.0),
         "6h": (4.0, 4.0),
         "12h": (3.0, 3.2),
-        "24h": (2.5, 2.6),
+        "24h": (2.5, 1.22),
     }
     expressions = []
+    cumulative_probability: pl.Expr | None = None
     for horizon, (threshold, slope) in settings.items():
         probability = 1.0 / (1.0 + (-(score - threshold) * slope).exp())
-        expressions.append((uniform < probability).alias(f"target_{horizon}"))
+        cumulative_probability = (
+            probability
+            if cumulative_probability is None
+            else pl.max_horizontal(cumulative_probability, probability)
+        )
+        expressions.append(
+            (uniform < cumulative_probability).alias(f"target_{horizon}")
+        )
     return source.with_columns(*expressions)

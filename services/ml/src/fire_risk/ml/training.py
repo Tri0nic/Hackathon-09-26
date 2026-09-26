@@ -191,7 +191,11 @@ def _config_payload(config: TrainingConfig) -> dict[str, Any]:
 
 def _implementation_revision() -> str:
     digest = hashlib.sha256()
-    for path in (Path(__file__), Path(__file__).with_name("data.py")):
+    for path in (
+        Path(__file__),
+        Path(__file__).with_name("data.py"),
+        Path(__file__).with_name("synthetic.py"),
+    ):
         digest.update(path.read_bytes())
     return digest.hexdigest()
 
