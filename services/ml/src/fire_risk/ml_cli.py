@@ -5,6 +5,7 @@ from typing import Annotated
 
 import typer
 
+from fire_risk.ml.evaluation import evaluate_artifact
 from fire_risk.ml.training import TrainingConfig, train_all
 
 app = typer.Typer(no_args_is_help=True)
@@ -51,6 +52,16 @@ def train(
     )
     typer.echo(f"Training complete. Manifest: {manifest}")
     typer.echo(f"Metrics: {manifest.parent / 'metrics.json'}")
+
+
+@app.command()
+def evaluate(
+    input_path: Annotated[Path, typer.Option("--input", exists=True, dir_okay=False)],
+    artifact: Annotated[Path, typer.Option("--artifact", exists=True, file_okay=False)],
+) -> None:
+    """Write event-level proxy metrics without retraining."""
+    report = evaluate_artifact(input_path, artifact)
+    typer.echo(f"Event metrics: {report}")
 
 
 if __name__ == "__main__":
