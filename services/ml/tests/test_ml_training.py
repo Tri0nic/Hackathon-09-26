@@ -4,6 +4,7 @@ import pytest
 from fire_risk.ml.training import (
     Calibration,
     TrainingConfig,
+    _signature,
     calibrate,
     enforce_monotonic,
     fit_calibration,
@@ -64,3 +65,13 @@ def test_manual_calibration_is_numerically_stable() -> None:
     assert np.isfinite(result).all()
     assert result[0] < 1e-300
     assert result[1] == 1.0
+
+
+def test_resume_signature_changes_with_implementation() -> None:
+    config = TrainingConfig(input_path="snapshots.parquet", output_dir="models")
+    identity = {"sha256": "data"}
+
+    first = _signature(config, identity, ["signal"], "implementation-a")
+    second = _signature(config, identity, ["signal"], "implementation-b")
+
+    assert first != second

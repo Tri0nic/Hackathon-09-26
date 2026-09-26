@@ -187,11 +187,26 @@ def _config_payload(config: TrainingConfig) -> dict[str, Any]:
     return payload
 
 
-def _signature(config: TrainingConfig, identity: dict[str, Any], features: list[str]) -> str:
+def _implementation_revision() -> str:
+    digest = hashlib.sha256()
+    for path in (Path(__file__), Path(__file__).with_name("data.py")):
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _signature(
+    config: TrainingConfig,
+    identity: dict[str, Any],
+    features: list[str],
+    implementation_revision: str | None = None,
+) -> str:
     payload: dict[str, Any] = {
         "config": _config_payload(config),
         "input": identity,
         "features": features,
+        "implementation_revision": implementation_revision
+        if implementation_revision is not None
+        else _implementation_revision(),
     }
     payload["config"].pop("resume", None)
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
@@ -205,6 +220,7 @@ def train_all(config: TrainingConfig) -> Path:
         raise FileNotFoundError(input_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     identity = _input_identity(input_path)
+    implementation_revision = _implementation_revision()
     source = pl.scan_parquet(input_path)
     manifest_horizons: dict[str, Any] = {}
     features: list[str] | None = None
@@ -213,7 +229,7 @@ def train_all(config: TrainingConfig) -> Path:
         started = time.perf_counter()
         split = split_frame(source, horizon)
         features = split.features
-        signature = _signature(config, identity, features)
+        signature = _signature(config, identity, features, implementation_revision)
         model_path = output_dir / f"model_{horizon}.cbm"
         metadata_path = output_dir / f"model_{horizon}.json"
         if config.resume and model_path.is_file() and metadata_path.is_file():
@@ -295,7 +311,9 @@ def train_all(config: TrainingConfig) -> Path:
     assert features is not None
     configuration = _config_payload(config)
     configuration.pop("resume", None)
-    model_version = f"catboost-{_signature(config, identity, features)[:12]}"
+    model_version = (
+        f"catboost-{_signature(config, identity, features, implementation_revision)[:12]}"
+    )
     manifest = {
         "artifact_schema_version": "1",
         "model_version": model_version,
@@ -308,6 +326,7 @@ def train_all(config: TrainingConfig) -> Path:
         "validation_period": "2025-01-01/2025-12-31",
         "test_period": "2026-01-01/2026-12-31",
         "input": identity,
+        "implementation_revision": implementation_revision,
         "configuration": configuration,
         "features": features,
         "packages": {

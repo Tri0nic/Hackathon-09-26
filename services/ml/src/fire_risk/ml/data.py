@@ -35,12 +35,15 @@ def split_frame(source: pl.LazyFrame, horizon: str) -> SplitFrames:
     if missing:
         raise ValueError(f"snapshot schema is missing: {sorted(missing)}")
 
+    business_year = (
+        pl.col("scoring_timestamp").dt.convert_time_zone("Europe/Moscow").dt.year()
+    )
     prepared = source.with_columns(
-        pl.when(pl.col("scoring_timestamp").dt.year().is_between(2019, 2024))
+        pl.when(business_year.is_between(2019, 2024))
         .then(pl.lit("train"))
-        .when(pl.col("scoring_timestamp").dt.year() == 2025)
+        .when(business_year == 2025)
         .then(pl.lit("validation"))
-        .when(pl.col("scoring_timestamp").dt.year() == 2026)
+        .when(business_year == 2026)
         .then(pl.lit("test"))
         .otherwise(pl.lit(None, dtype=pl.String))
         .alias("_split")

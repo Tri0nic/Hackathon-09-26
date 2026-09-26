@@ -8,26 +8,37 @@ from fire_risk.ml.data import feature_columns, sample_training, split_frame
 def _snapshots() -> pl.LazyFrame:
     return pl.DataFrame(
         {
-            "object_id": ["a", "a", "b", "c", "d", "e"],
+            "object_id": ["a", "a", "b", "c", "d", "e", "f", "g"],
             "scoring_timestamp": [
-                datetime(2024, 12, 31, 23, tzinfo=UTC),
-                datetime(2025, 1, 1, tzinfo=UTC),
+                datetime(2024, 12, 31, 20, tzinfo=UTC),
+                datetime(2024, 12, 31, 22, tzinfo=UTC),
                 datetime(2024, 6, 1, tzinfo=UTC),
                 datetime(2025, 6, 1, tzinfo=UTC),
                 datetime(2026, 6, 1, tzinfo=UTC),
                 datetime(2025, 7, 1, tzinfo=UTC),
+                datetime(2018, 12, 31, 22, tzinfo=UTC),
+                datetime(2024, 12, 31, 22, tzinfo=UTC),
             ],
-            "signal": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-            "flag": [True, False, True, False, True, False],
-            "target_now_available": [True] * 6,
-            "target_6h_available": [True, True, True, True, True, False],
-            "target_12h_available": [True] * 6,
-            "target_24h_available": [True] * 6,
-            "target_now": [False, False, True, False, True, False],
-            "target_6h": [False, True, True, False, True, None],
-            "target_12h": [False, True, True, False, True, False],
-            "target_24h": [False, True, True, False, True, False],
-            "episode_group_id": ["cross", "cross", "train", "valid", "test", None],
+            "signal": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            "flag": [True, False, True, False, True, False, True, False],
+            "target_now_available": [True] * 8,
+            "target_6h_available": [True, True, True, True, True, False, True, True],
+            "target_12h_available": [True] * 8,
+            "target_24h_available": [True] * 8,
+            "target_now": [False, False, True, False, True, False, False, False],
+            "target_6h": [False, True, True, False, True, None, False, False],
+            "target_12h": [False, True, True, False, True, False, False, False],
+            "target_24h": [False, True, True, False, True, False, False, False],
+            "episode_group_id": [
+                "cross",
+                "cross",
+                "train",
+                "valid",
+                "test",
+                None,
+                None,
+                None,
+            ],
         }
     ).lazy()
 
@@ -35,8 +46,11 @@ def _snapshots() -> pl.LazyFrame:
 def test_split_excludes_cross_boundary_groups_and_censored_rows() -> None:
     split = split_frame(_snapshots(), "6h")
 
-    assert split.train.select("object_id").collect().to_series().to_list() == ["b"]
-    assert split.validation.select("object_id").collect().to_series().to_list() == ["c"]
+    assert split.train.select("object_id").collect().to_series().to_list() == ["f", "b"]
+    assert split.validation.select("object_id").collect().to_series().to_list() == [
+        "g",
+        "c",
+    ]
     assert split.test.select("object_id").collect().to_series().to_list() == ["d"]
     assert split.features == ["signal", "flag"]
 
