@@ -108,7 +108,7 @@ def sample_training(
             selected = frame.filter(pl.col(target) == label)
             if 0 < quota < count:
                 fraction = min(1.0, (quota / count) * 1.25)
-                threshold = int(((2**64) - 1) * fraction)
+                threshold = min((2**64) - 1, int(((2**64) - 1) * fraction))
                 selected = selected.filter(
                     pl.struct(hash_columns).hash(seed=seed)
                     <= pl.lit(threshold, dtype=pl.UInt64)

@@ -25,6 +25,7 @@ from sklearn.metrics import (  # type: ignore[import-untyped]
 )
 
 from fire_risk.ml.data import sample_training, split_frame
+from fire_risk.ml.synthetic import with_synthetic_targets
 
 HORIZONS = ("now", "6h", "12h", "24h")
 
@@ -51,6 +52,7 @@ class TrainingConfig:
     early_stopping_rounds: int = 75
     progress_interval: int = 25
     resume: bool = True
+    synthetic_labels: bool = False
 
 
 def calibrate(raw_scores: np.ndarray, calibration: Calibration) -> np.ndarray:
@@ -133,7 +135,7 @@ def _cap_rows(frame: pl.LazyFrame, max_rows: int, seed: int) -> pl.DataFrame:
     if count <= max_rows:
         return frame.collect()
     fraction = min(1.0, (max_rows / count) * 1.25)
-    threshold = int(((2**64) - 1) * fraction)
+    threshold = min((2**64) - 1, int(((2**64) - 1) * fraction))
     return (
         frame.filter(
             pl.struct("object_id", "scoring_timestamp").hash(seed=seed)
@@ -222,6 +224,8 @@ def train_all(config: TrainingConfig) -> Path:
     identity = _input_identity(input_path)
     implementation_revision = _implementation_revision()
     source = pl.scan_parquet(input_path)
+    if config.synthetic_labels:
+        source = with_synthetic_targets(source)
     manifest_horizons: dict[str, Any] = {}
     features: list[str] | None = None
 
@@ -287,6 +291,9 @@ def train_all(config: TrainingConfig) -> Path:
         raw_test = np.asarray(model.predict(x_test, prediction_type="RawFormulaVal"))
         probabilities = calibrate(raw_test, fitted)
         metrics = _metrics(y_test, probabilities, fitted.threshold)
+        if config.synthetic_labels:
+            metrics["label_source"] = "synthetic_customer_requested"
+            metrics["warning"] = "Synthetic demo-label reproduction, not real-fire quality."
         temporary_model = model_path.with_suffix(".cbm.tmp")
         model.save_model(temporary_model)
         os.replace(temporary_model, model_path)
@@ -314,14 +321,20 @@ def train_all(config: TrainingConfig) -> Path:
     model_version = (
         f"catboost-{_signature(config, identity, features, implementation_revision)[:12]}"
     )
+    label_source = "synthetic_customer_requested" if config.synthetic_labels else "proxy"
+    warning = (
+        "Synthetic customer-requested demo labels; not real-fire detection quality."
+        if config.synthetic_labels
+        else "Metrics reproduce reconstructed proxy labels; they are not confirmed real-fire quality."
+    )
     manifest = {
         "artifact_schema_version": "1",
         "model_version": model_version,
         "created_at": datetime.now(UTC).isoformat(),
         "feature_schema_version": "feature-snapshots-v1",
-        "label_provider_version": "smvu-proxy-v2",
-        "label_source": "proxy",
-        "warning": "Metrics reproduce reconstructed proxy labels; they are not confirmed real-fire quality.",
+        "label_provider_version": "customer-synthetic-v1" if config.synthetic_labels else "smvu-proxy-v2",
+        "label_source": label_source,
+        "warning": warning,
         "training_period": "2019-01-01/2024-12-31",
         "validation_period": "2025-01-01/2025-12-31",
         "test_period": "2026-01-01/2026-12-31",
@@ -343,7 +356,7 @@ def train_all(config: TrainingConfig) -> Path:
         output_dir / "metrics.json",
         {
             "model_version": model_version,
-            "label_source": "proxy",
+            "label_source": label_source,
             "warning": manifest["warning"],
             "horizons": {
                 horizon: manifest_horizons[horizon]["metrics"] for horizon in HORIZONS

@@ -31,6 +31,7 @@ def train(
     early_stopping_rounds: Annotated[int, typer.Option()] = 75,
     progress_interval: Annotated[int, typer.Option()] = 25,
     resume: Annotated[bool, typer.Option("--resume/--no-resume")] = True,
+    synthetic_labels: Annotated[bool, typer.Option("--synthetic-labels/--proxy-labels")] = False,
 ) -> None:
     """Train now/6h/12h/24h sequentially and write a versioned artifact."""
     manifest = train_all(
@@ -48,6 +49,7 @@ def train(
             early_stopping_rounds=early_stopping_rounds,
             progress_interval=progress_interval,
             resume=resume,
+            synthetic_labels=synthetic_labels,
         )
     )
     typer.echo(f"Training complete. Manifest: {manifest}")
