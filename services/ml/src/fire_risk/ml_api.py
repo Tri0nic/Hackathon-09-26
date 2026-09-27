@@ -4,85 +4,32 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
-
 if TYPE_CHECKING:
     from fire_risk.ml.inference import Predictor
 
 
-class DemoFactor(BaseModel):
-    horizon: str
-    feature: str
-    value: float
-    contribution: float
-
-
-class DemoPrediction(BaseModel):
-    model_version: str
-    calculated_at: datetime
-    p_now: float
-    p_6h: float
-    p_12h: float
-    p_24h: float
-    decisions: dict[str, bool]
-    factors: list[DemoFactor]
-
-
-class DemoPredictor:
-    """Deterministic proxy predictor used only by the local jury demo."""
-
-    _stages = (
-        (0.05, 0.15, 0.30, 0.55),
-        (0.08, 0.28, 0.72, 0.80),
-        (0.12, 0.81, 0.88, 0.92),
-        (0.86, 0.90, 0.94, 0.97),
-        (0.10, 0.78, 0.86, 0.91),
-    )
-
-    def predict(self, features: dict[str, Any], top_k: int = 5) -> Any:
-        stage = max(0, min(int(features.get("demo_stage", 0)), len(self._stages) - 1))
-        p_now, p_6h, p_12h, p_24h = self._stages[stage]
-        return DemoPrediction(
-            model_version="demo-proxy-v1",
-            calculated_at=datetime(2026, 9, 27, 9, stage, tzinfo=timezone.utc),
-            p_now=p_now,
-            p_6h=p_6h,
-            p_12h=p_12h,
-            p_24h=p_24h,
-            decisions={
-                "now": p_now >= 0.8,
-                "6h": p_6h >= 0.75,
-                "12h": p_12h >= 0.65,
-                "24h": p_24h >= 0.5,
-            },
-            factors=[
-                DemoFactor(
-                    horizon="now" if stage == 3 else ("6h" if stage >= 2 else "24h"),
-                    feature="demo_stage",
-                    value=float(stage),
-                    contribution=0.42,
-                )
-            ][:top_k],
-        )
-
-
-def create_demo_runtime() -> tuple[DemoPredictor, dict[str, Any]]:
-    return DemoPredictor(), {
-        "model_version": "demo-proxy-v1",
-        "created_at": "2026-09-27T09:00:00Z",
-        "label_source": "demo_proxy",
-        "warning": "Демонстрационная proxy-модель; не подтверждает качество на реальных пожарах.",
-        "rocAuc": 0.84,
-        "precision": 0.73,
-        "recall": 0.79,
-        "alertsPerDay": 3.2,
-        "horizons": {name: {"mode": "deterministic_demo"} for name in ("now", "6h", "12h", "24h")},
+def model_summary(manifest: dict[str, Any]) -> dict[str, Any]:
+    horizons = manifest.get("horizons", {})
+    now_metrics = horizons.get("now", {}).get("metrics", {})
+    return {
+        "modelVersion": manifest.get("model_version"),
+        "artifact": "catboost-synthetic-v1",
+        "createdAt": manifest.get("created_at"),
+        "labelSource": manifest.get("label_source"),
+        "warning": manifest.get("warning"),
+        "rocAuc": now_metrics.get("roc_auc", 0.0),
+        "precision": now_metrics.get("precision", 0.0),
+        "recall": now_metrics.get("recall", 0.0),
+        "alertsPerDay": 0.0,
+        "horizons": {
+            name: metadata.get("metrics", {})
+            for name, metadata in horizons.items()
+        },
     }
 
 
@@ -102,20 +49,7 @@ def create_handler(predictor: "Predictor", manifest: dict[str, Any]) -> type[Bas
             if self.path == "/health":
                 self._json(HTTPStatus.OK, {"status": "ok"})
             elif self.path == "/ml/models/current":
-                self._json(
-                    HTTPStatus.OK,
-                    {
-                        "modelVersion": manifest.get("model_version"),
-                        "createdAt": manifest.get("created_at"),
-                        "labelSource": manifest.get("label_source"),
-                        "warning": manifest.get("warning"),
-                        "rocAuc": manifest.get("rocAuc", 0.0),
-                        "precision": manifest.get("precision", 0.0),
-                        "recall": manifest.get("recall", 0.0),
-                        "alertsPerDay": manifest.get("alertsPerDay", 0.0),
-                        "horizons": manifest.get("horizons", {}),
-                    },
-                )
+                self._json(HTTPStatus.OK, model_summary(manifest))
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -149,20 +83,16 @@ def create_handler(predictor: "Predictor", manifest: dict[str, Any]) -> type[Bas
 
 
 def run() -> None:
-    if os.getenv("FIRE_RISK_DEMO_MODE", "false").lower() == "true":
-        predictor, manifest = create_demo_runtime()
-    else:
-        from fire_risk.ml.inference import load_predictor
+    from fire_risk.ml.inference import load_predictor
 
-        repo_root = Path(__file__).resolve().parents[4]
-        manifest_path = Path(
-            os.getenv(
-                "FIRE_RISK_MODEL",
-                repo_root / ".artifacts" / "ml" / "catboost-synthetic-v1" / "manifest.json",
-            )
+    manifest_path = Path(
+        os.getenv(
+            "FIRE_RISK_MODEL",
+            "/app/model/catboost-synthetic-v1/manifest.json",
         )
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        predictor = load_predictor(manifest_path)
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    predictor = load_predictor(manifest_path)
     host = os.getenv("FIRE_RISK_ML_HOST", "127.0.0.1")
     port = int(os.getenv("FIRE_RISK_ML_PORT", "8000"))
     ThreadingHTTPServer((host, port), create_handler(predictor, manifest)).serve_forever()

@@ -10,7 +10,7 @@ const channels: Channel[] = [
 const alerts: AppData["alerts"] = [
   {
     id: "8d6fc5a1-06ef-49ee-839c-fb17d121d6cb", episodeId: "EP-2026-0927-014", objectId: "demo-object-1", objectName: "Коллектор №1 · участок Северный", kind: "fire", level: "red", horizon: "6h", probability: 0.82,
-    pNow: 0.18, p6h: 0.82, p12h: 0.88, p24h: 0.93, calculatedAt: "2026-09-27T12:42:00+03:00", modelVersion: "catboost-synthetic-v1", stale: false, current: true, picketFrom: 12.5, picketTo: 12.9, channels,
+    pNow: 0.18, p6h: 0.82, p12h: 0.88, p24h: 0.93, calculatedAt: "2026-09-27T12:42:00+03:00", modelVersion: "catboost-e87d5604945b", stale: false, current: true, picketFrom: 12.5, picketTo: 12.9, channels,
     factors: [
       { label: "Рост температуры", contribution: 0.34, detail: "+29 °C к суточному профилю" },
       { label: "Сигнал дыма", contribution: 0.28, detail: "3 срабатывания за 15 минут" },
@@ -24,15 +24,15 @@ const alerts: AppData["alerts"] = [
   },
   {
     id: "a4d9a282-c3a2-4fcb-ae19-97341cda46c9", episodeId: "EP-2026-0927-009", objectId: "demo-object-2", objectName: "Коллектор №4 · участок Восточный", kind: "malfunction", level: "yellow", horizon: "12h", probability: 0.67,
-    pNow: 0.09, p6h: 0.38, p12h: 0.67, p24h: 0.72, calculatedAt: "2026-09-27T12:31:00+03:00", modelVersion: "catboost-synthetic-v1", stale: false, current: true, channels: [{ ...channels[3], id: "service-east" }], factors: [{ label: "Потеря связи", contribution: 0.44, detail: "Нет данных 47 минут" }], recommendation: "Проверить питание и линию связи датчика.", context: "Данные о работах не предоставлены.", recipients: ["Диспетчер района", "Диспетчер ОДС"], history: [{ toLevel: "yellow", changedAt: "2026-09-27T12:31:00+03:00" }], decisions: []
+    pNow: 0.09, p6h: 0.38, p12h: 0.67, p24h: 0.72, calculatedAt: "2026-09-27T12:31:00+03:00", modelVersion: "catboost-e87d5604945b", stale: false, current: true, channels: [{ ...channels[3], id: "service-east" }], factors: [{ label: "Потеря связи", contribution: 0.44, detail: "Нет данных 47 минут" }], recommendation: "Проверить питание и линию связи датчика.", context: "Данные о работах не предоставлены.", recipients: ["Диспетчер района", "Диспетчер ОДС"], history: [{ toLevel: "yellow", changedAt: "2026-09-27T12:31:00+03:00" }], decisions: []
   },
   {
     id: "3c2d6307-33ac-40f4-a8c2-80ae9df140a7", episodeId: "EP-2026-0927-004", objectId: "demo-object-3", objectName: "Коллектор №7 · участок Центральный", kind: "fire", level: "green", horizon: "24h", probability: 0.41,
-    pNow: 0.03, p6h: 0.14, p12h: 0.25, p24h: 0.41, calculatedAt: "2026-09-27T12:14:00+03:00", modelVersion: "catboost-synthetic-v1", stale: false, current: true, channels: [channels[0]], factors: [{ label: "Температурный тренд", contribution: 0.18, detail: "+6 °C за 3 часа" }], recommendation: "Продолжить наблюдение.", context: "Данные о работах не предоставлены.", recipients: ["Диспетчер ОДС"], history: [{ toLevel: "green", changedAt: "2026-09-27T12:14:00+03:00" }], decisions: [{ decision: "Наблюдение", decidedAt: "2026-09-27T12:18:00+03:00" }]
+    pNow: 0.03, p6h: 0.14, p12h: 0.25, p24h: 0.41, calculatedAt: "2026-09-27T12:14:00+03:00", modelVersion: "catboost-e87d5604945b", stale: false, current: true, channels: [channels[0]], factors: [{ label: "Температурный тренд", contribution: 0.18, detail: "+6 °C за 3 часа" }], recommendation: "Продолжить наблюдение.", context: "Данные о работах не предоставлены.", recipients: ["Диспетчер ОДС"], history: [{ toLevel: "green", changedAt: "2026-09-27T12:14:00+03:00" }], decisions: [{ decision: "Наблюдение", decidedAt: "2026-09-27T12:18:00+03:00" }]
   },
   {
     id: "44444444-4444-4444-4444-444444444444", episodeId: "EP-DEMO-BLACK", objectId: "demo-object-4", objectName: "Коллектор №9 · участок Южный", kind: "fire", level: "black", horizon: "now", probability: 0.91,
-    pNow: 0.91, p6h: 0.94, p12h: 0.96, p24h: 0.98, calculatedAt: "2026-09-27T12:48:00+03:00", modelVersion: "demo-proxy-v1", stale: false, current: true, picketFrom: 12.7, picketTo: 12.7, channels: [channels[1]], factors: [{ label: "Дым и быстрый нагрев", contribution: 0.61, detail: "Совместный пожарный паттерн" }], recommendation: "Немедленно проверить участок и направить группу реагирования.", context: "Демонстрационный сценарий BLACK.", recipients: ["Техник", "Диспетчер района", "Диспетчер ОДС", "Группа реагирования"], history: [{ toLevel: "black", changedAt: "2026-09-27T12:48:00+03:00" }], decisions: []
+    pNow: 0.91, p6h: 0.94, p12h: 0.96, p24h: 0.98, calculatedAt: "2026-09-27T12:48:00+03:00", modelVersion: "catboost-e87d5604945b", stale: false, current: true, picketFrom: 12.7, picketTo: 12.7, channels: [channels[1]], factors: [{ label: "Дым и быстрый нагрев", contribution: 0.61, detail: "Совместный пожарный паттерн" }], recommendation: "Немедленно проверить участок и направить группу реагирования.", context: "Демонстрационный сценарий BLACK.", recipients: ["Техник", "Диспетчер района", "Диспетчер ОДС", "Группа реагирования"], history: [{ toLevel: "black", changedAt: "2026-09-27T12:48:00+03:00" }], decisions: []
   }
 ];
 
@@ -52,5 +52,5 @@ export const demoData: AppData = {
     { id: "SMS-2203", episodeId: alerts[1].episodeId, alertLevel: "yellow", recipientId: "ods-01", role: "Диспетчер ОДС", sentAt: "2026-09-27T12:31:04+03:00", content: "Технический сбой: потеря связи с каналом", status: "queued" },
     { id: "SMS-2204", episodeId: alerts[3].episodeId, alertLevel: "black", recipientId: "response-01", role: "Группа реагирования", sentAt: "2026-09-27T12:48:05+03:00", content: "Чёрный уровень: немедленное реагирование", status: "delivered" }
   ],
-  metrics: { modelVersion: "catboost-synthetic-v1", labelSource: "Proxy-разметка MVP (не подтверждённые пожары)", rocAuc: 0.84, precision: 0.73, recall: 0.79, alertsPerDay: 3.2 }
+  metrics: { modelVersion: "catboost-e87d5604945b", labelSource: "Синтетическая разметка (не подтверждённые пожары)", rocAuc: 0.9965, precision: 0.8767, recall: 0.7752, alertsPerDay: 0 }
 };

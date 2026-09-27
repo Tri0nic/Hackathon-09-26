@@ -16,6 +16,10 @@
 docker compose up --build -d
 ```
 
+Контейнер ML загружает только обученный артефакт `catboost-synthetic-v1`
+(`catboost-e87d5604945b`) с четырьмя моделями: `now`, `6h`, `12h` и `24h`.
+Демонстрационной ML-заглушки в рабочем Compose нет.
+
 После запуска откройте: **http://localhost:8080**
 
 Автоматическая проверка стенда:
@@ -85,7 +89,7 @@ API сохраняет последний успешный прогноз. Ес�
 ```powershell
 docker compose stop ml
 Invoke-RestMethod -Method Post -Uri http://localhost:5000/api/objects/demo-object-1/predict `
-  -ContentType application/json -Body '{"features":{"demo_stage":3},"topK":3}'
+  -ContentType application/json -Body '{"features":{"activity_ratio_24h":1.25,"alarm_count_5m":3,"smoke_heat_5m":1},"topK":3}'
 docker compose start ml
 ```
 
@@ -95,6 +99,7 @@ docker compose start ml
 Push-Location services/ml
 python -m pytest tests/test_ml_api.py -q
 Pop-Location
+powershell -ExecutionPolicy Bypass -File .\scripts\check-real-ml.ps1
 dotnet test --no-restore
 Set-Location services/web
 npm test -- --run

@@ -1,0 +1,59 @@
+{
+  "model_version": "catboost-e87d5604945b",
+  "label_source": "synthetic_customer_requested",
+  "warning": "Synthetic customer-requested demo labels; not real-fire detection quality.",
+  "horizons": {
+    "now": {
+      "rows": 1257282,
+      "positives": 27219,
+      "pr_auc": 0.9021163169745543,
+      "precision": 0.8766776083433747,
+      "recall": 0.7751570594070318,
+      "f1": 0.8227976445813673,
+      "brier": 0.005231996058690092,
+      "threshold": 0.5991652933908305,
+      "label_source": "synthetic_customer_requested",
+      "warning": "Synthetic demo-label reproduction, not real-fire quality.",
+      "roc_auc": 0.9964993842281209
+    },
+    "6h": {
+      "rows": 1256608,
+      "positives": 49231,
+      "pr_auc": 0.7753793514128497,
+      "precision": 0.7779362397700594,
+      "recall": 0.7201966240783246,
+      "f1": 0.7479537591764408,
+      "brier": 0.014916256647874136,
+      "threshold": 0.3829343111017417,
+      "label_source": "synthetic_customer_requested",
+      "warning": "Synthetic demo-label reproduction, not real-fire quality.",
+      "roc_auc": 0.9272089435154967
+    },
+    "12h": {
+      "rows": 1255351,
+      "positives": 89251,
+      "pr_auc": 0.6379585601745199,
+      "precision": 0.7582728720580428,
+      "recall": 0.5761279985658424,
+      "f1": 0.6547691053908304,
+      "brier": 0.03586919661276111,
+      "threshold": 0.3598190951066293,
+      "label_source": "synthetic_customer_requested",
+      "warning": "Synthetic demo-label reproduction, not real-fire quality.",
+      "roc_auc": 0.8313144182036742
+    },
+    "24h": {
+      "rows": 1252494,
+      "positives": 123517,
+      "pr_auc": 0.5569849653372745,
+      "precision": 0.7407911872588026,
+      "recall": 0.5019713885538023,
+      "f1": 0.5984344687135039,
+      "brier": 0.05561053705972099,
+      "threshold": 0.30642951743052854,
+      "label_source": "synthetic_customer_requested",
+      "warning": "Synthetic demo-label reproduction, not real-fire quality.",
+      "roc_auc": 0.778110935288454
+    }
+  }
+}

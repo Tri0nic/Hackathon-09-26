@@ -1,0 +1,10 @@
+*
+!services/
+!services/ml/
+!services/ml/pyproject.toml
+!services/ml/src/
+!services/ml/src/**
+!.artifacts/
+!.artifacts/ml/
+!.artifacts/ml/catboost-synthetic-v1/
+!.artifacts/ml/catboost-synthetic-v1/**

@@ -129,20 +129,20 @@ on conflict (id) do update set display_value=excluded.display_value, display_sta
 insert into risk_alerts(id, episode_id, object_id, level, horizon, probability, p_now, p_6h, p_12h, p_24h,
     calculated_at, model_version, stale, factors, recommendation, alert_kind, context, current) values
     ('11111111-1111-1111-1111-111111111111', 'EP-DEMO-MAIN', 'demo-object-1', 'red', '6h', 0.82, 0.18, 0.82, 0.88, 0.93,
-     '2026-09-27T12:42:00+03:00', 'demo-proxy-v1', false,
+     '2026-09-27T12:42:00+03:00', 'catboost-e87d5604945b', false,
      '[{"label":"Рост температуры","contribution":0.34,"detail":"+29 °C к суточному профилю"},{"label":"Сигнал дыма","contribution":0.28,"detail":"3 срабатывания за 15 минут"}]',
      'Проверить участок ПК 12+50–12+90 и состояние пожарных датчиков.', 'fire',
      'Демонстрационный контекст из отдельного mock-источника: рядом запланированы сварочные работы.', true),
     ('22222222-2222-2222-2222-222222222222', 'EP-DEMO-FAULT', 'demo-object-2', 'yellow', '12h', 0.67, 0.09, 0.38, 0.67, 0.72,
-     '2026-09-27T12:31:00+03:00', 'demo-proxy-v1', false,
+     '2026-09-27T12:31:00+03:00', 'catboost-e87d5604945b', false,
      '[{"label":"Потеря связи","contribution":0.44,"detail":"Нет данных 47 минут"}]',
      'Проверить питание и линию связи датчика.', 'malfunction', 'Данные о работах не предоставлены.', true),
     ('33333333-3333-3333-3333-333333333333', 'EP-DEMO-GREEN', 'demo-object-3', 'green', '24h', 0.41, 0.03, 0.14, 0.25, 0.41,
-     '2026-09-27T12:14:00+03:00', 'demo-proxy-v1', false,
+     '2026-09-27T12:14:00+03:00', 'catboost-e87d5604945b', false,
      '[{"label":"Температурный тренд","contribution":0.18,"detail":"+6 °C за 3 часа"}]',
      'Продолжить наблюдение.', 'fire', 'Данные о работах не предоставлены.', true),
     ('44444444-4444-4444-4444-444444444444', 'EP-DEMO-BLACK', 'demo-object-4', 'black', 'now', 0.91, 0.91, 0.94, 0.96, 0.98,
-     '2026-09-27T12:48:00+03:00', 'demo-proxy-v1', false,
+     '2026-09-27T12:48:00+03:00', 'catboost-e87d5604945b', false,
      '[{"label":"Дым и быстрый нагрев","contribution":0.61,"detail":"Совместный пожарный паттерн"}]',
      'Немедленно проверить участок и направить группу реагирования.', 'fire', 'Демонстрационный сценарий BLACK.', true)
 on conflict (id) do nothing;
@@ -159,7 +159,7 @@ from (values
 where not exists (select 1 from alert_level_history where alert_id='11111111-1111-1111-1111-111111111111');
 
 insert into risk_predictions(id, object_id, model_version, calculated_at, p_now, p_6h, p_12h, p_24h, factors) values
-    ('55555555-5555-5555-5555-555555555555', 'demo-object-1', 'demo-proxy-v1', '2026-09-27T12:42:00+03:00', 0.18, 0.82, 0.88, 0.93, '[]')
+    ('55555555-5555-5555-5555-555555555555', 'demo-object-1', 'catboost-e87d5604945b', '2026-09-27T12:42:00+03:00', 0.18, 0.82, 0.88, 0.93, '[]')
 on conflict (id) do nothing;
 
 insert into dispatcher_decisions(id, alert_id, episode_id, object_id, decision, comment, decided_at) values

@@ -14,9 +14,11 @@ services:
       - fire-risk-postgres:/var/lib/postgresql/data
 
   ml:
-    build: ./services/ml
+    build:
+      context: .
+      dockerfile: services/ml/Dockerfile
     environment:
-      FIRE_RISK_DEMO_MODE: "true"
+      FIRE_RISK_MODEL: /app/model/catboost-synthetic-v1/manifest.json
       FIRE_RISK_ML_HOST: 0.0.0.0
       FIRE_RISK_ML_PORT: 8000
     ports:
