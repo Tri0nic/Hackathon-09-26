@@ -1,0 +1,95 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using FireRisk.Api;
+using FireRisk.Api.Domain;
+using Npgsql;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower)));
+
+var connectionString = builder.Configuration.GetConnectionString("Postgres")
+    ?? throw new InvalidOperationException("ConnectionStrings:Postgres is required");
+builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
+builder.Services.AddSingleton<PgStore>();
+builder.Services.AddHttpClient<MlClient>(client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Ml:BaseUrl"] ?? "http://localhost:8000");
+    client.Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Ml:TimeoutSeconds", 10));
+});
+
+var app = builder.Build();
+
+if (builder.Configuration.GetValue("Database:MigrateOnStart", true))
+    await app.Services.GetRequiredService<PgStore>().MigrateAsync();
+
+app.MapGet("/health", async (PgStore store, CancellationToken ct) =>
+    await store.IsHealthyAsync(ct) ? Results.Ok(new { status = "ok" }) : Results.StatusCode(503));
+
+app.MapGet("/api/dashboard", (PgStore store, CancellationToken ct) => store.GetDashboardAsync(ct));
+app.MapGet("/api/objects", (PgStore store, CancellationToken ct) => store.GetObjectsAsync(ct));
+app.MapGet("/api/objects/{id}", async (string id, PgStore store, CancellationToken ct) =>
+{
+    var value = await store.GetObjectAsync(id, ct);
+    return value.ValueKind == JsonValueKind.Null ? Results.NotFound() : Results.Ok(value);
+});
+app.MapGet("/api/objects/{id}/pickets", (string id, PgStore store, CancellationToken ct) => store.GetPicketsAsync(id, ct));
+
+app.MapGet("/api/alerts", (PgStore store, CancellationToken ct) => store.GetAlertsAsync(ct));
+app.MapGet("/api/alerts/{id:guid}", async (Guid id, PgStore store, CancellationToken ct) =>
+{
+    var value = await store.GetAlertAsync(id, ct);
+    return value.ValueKind == JsonValueKind.Null ? Results.NotFound() : Results.Ok(value);
+});
+
+var decisions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+{
+    "confirmed_fire", "smoke_without_fire", "false_alarm",
+    "sensor_malfunction", "maintenance", "unknown"
+};
+app.MapPost("/api/alerts/{id:guid}/decision", async (Guid id, DecisionRequest request, PgStore store, CancellationToken ct) =>
+{
+    if (!decisions.Contains(request.Decision)) return Results.BadRequest(new { error = "unknown decision" });
+    try { return Results.Created($"/api/alerts/{id}", new { id = await store.AddDecisionAsync(id, request.Decision, request.Comment, ct) }); }
+    catch (KeyNotFoundException) { return Results.NotFound(); }
+});
+
+app.MapPost("/api/alerts/{id:guid}/requests", async (Guid id, CreateMaintenanceRequest request, PgStore store, CancellationToken ct) =>
+{
+    try { return Results.Created("/api/requests", new { id = await store.AddRequestAsync(id, request.Recommendation, ct) }); }
+    catch (KeyNotFoundException) { return Results.NotFound(); }
+});
+app.MapGet("/api/requests", (PgStore store, CancellationToken ct) => store.GetRequestsAsync(ct));
+app.MapPatch("/api/requests/{id:guid}/status", async (Guid id, ChangeRequestStatus request, PgStore store, CancellationToken ct) =>
+{
+    try { return await store.ChangeRequestStatusAsync(id, request.Status, ct) ? Results.NoContent() : Results.NotFound(); }
+    catch (InvalidOperationException exception) { return Results.BadRequest(new { error = exception.Message }); }
+});
+app.MapGet("/api/sms", (PgStore store, CancellationToken ct) => store.GetSmsAsync(ct));
+
+app.MapPost("/api/objects/{id}/predict", async (string id, PredictRequest request, MlClient ml, PgStore store, CancellationToken ct) =>
+{
+    try
+    {
+        var prediction = await ml.PredictAsync(request, ct);
+        var alertId = await store.SavePredictionAsync(id, prediction, ct);
+        return Results.Ok(new { prediction, alertId });
+    }
+    catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+    {
+        var last = await store.GetLastPredictionAsync(id, ct);
+        if (last is null) return Results.StatusCode(503);
+        await store.MarkCurrentAlertStaleAsync(id, ct);
+        return Results.Ok(new { prediction = PredictionFallback.FromFailure(last), alertId = (Guid?)null });
+    }
+});
+
+app.MapGet("/api/model/metrics", async (MlClient ml, CancellationToken ct) =>
+{
+    try { return Results.Ok(await ml.GetModelAsync(ct)); }
+    catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException) { return Results.StatusCode(503); }
+});
+
+app.Run();
+
+public partial class Program;

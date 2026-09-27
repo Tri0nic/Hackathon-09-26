@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/services/" />
+  <Folder Name="/services/api/">
+    <Project Path="services/api/FireRisk.Api.Tests/FireRisk.Api.Tests.csproj" />
+    <Project Path="services/api/FireRisk.Api/FireRisk.Api.csproj" />
+  </Folder>
+</Solution>

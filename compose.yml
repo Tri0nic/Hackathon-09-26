@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: fire_risk
+      POSTGRES_USER: fire_risk
+      POSTGRES_PASSWORD: fire_risk
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fire_risk"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - fire-risk-postgres:/var/lib/postgresql/data
+
+  ml:
+    build: ./services/ml
+    environment:
+      FIRE_RISK_DEMO_MODE: "true"
+      FIRE_RISK_ML_HOST: 0.0.0.0
+      FIRE_RISK_ML_PORT: 8000
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: ./services/api
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Postgres: Host=postgres;Port=5432;Database=fire_risk;Username=fire_risk;Password=fire_risk
+      Ml__BaseUrl: http://ml:8000
+      Database__MigrateOnStart: "true"
+    ports:
+      - "5000:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ml:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./services/web
+      args:
+        VITE_DEMO_MODE: "false"
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+
+volumes:
+  fire-risk-postgres:
