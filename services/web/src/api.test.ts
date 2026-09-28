@@ -33,7 +33,7 @@ test("сырые факторы опубликованного прогноза 
     requests: [], sms: [], metrics: {}
   });
 
-  expect(data.alerts[0].factors[0]).toEqual({ label: "Срабатывания тревоги", contribution: -.42, detail: "Вклад в прогноз на горизонте «12 часов»" });
+  expect(data.alerts[0].factors[0]).toEqual({ label: "Тревоги за 5 минут", contribution: -.42, detail: "Вклад в прогноз на горизонте «12 часов»" });
 });
 
 test("API демонстрации отделяет контекст от полного вектора признаков", () => {

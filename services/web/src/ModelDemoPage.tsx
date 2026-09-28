@@ -2,7 +2,7 @@ import { useEffect, useReducer } from "react";
 import { api } from "./api";
 import { PageTitle } from "./components";
 import { formatDate } from "./domain";
-import { canPublishModelDemo, initialModelDemoState, modelDemoReducer, modelFactorLabel } from "./modelDemo";
+import { canPublishModelDemo, initialModelDemoState, modelDemoReducer, modelDemoScenarioLabel, modelFactorInfluence, modelFactorLabel, uniqueModelFactors } from "./modelDemo";
 import type { ModelDemoState } from "./modelDemo";
 import type { UserRole } from "./types";
 
@@ -43,24 +43,25 @@ export function ModelDemoPage({ navigate, onRefresh, role, initialState }: { nav
     catch (error) { dispatch({ type: "failure", message: errorMessage(error) }); }
   };
 
+  const dangerous = state.calculation ? canPublishModelDemo(state.calculation.prediction.decisions) : undefined;
+  const channelSummary = scenario?.sensors.length
+    ? `${scenario.sensors.length} ${scenario.sensors.length === 1 ? "канал" : "каналов"}: ${scenario.sensors.slice(0, 2).map((sensor) => sensor.name).join(", ")}`
+    : "Каналы не указаны";
+
   return <>
-    <PageTitle title="Демонстрация модели" subtitle="Расчёт на последовательных записях отложенной выборки 2026 года"><span className="demo-badge">Демо</span></PageTitle>
-    <p className="notice info">Показания взяты из тестовой выборки и не редактируются вручную. Расчёт не переключает запись; для перехода используйте кнопку «Следующие показания».</p>
+    <PageTitle title="Демонстрация модели" subtitle="24 записи отложенной выборки 2026 года"><span className="demo-badge">Демо</span></PageTitle>
     {state.error && <p className="notice warning">{state.error}</p>}
     {!scenario ? <section className="panel"><div className="empty">{state.busy === "loading" ? "Загрузка тестовых показаний…" : "Тестовые показания недоступны."}</div></section> : <>
       <section className="panel model-demo-source">
-        <div className="panel-head"><div><h2>{scenario.objectName}</h2><p>{scenario.district} · {scenario.dangerousSection}</p></div><div className="model-demo-counter">Запись {state.index + 1} из {state.scenarios.length}</div></div>
-        <dl className="facts"><div><dt>Время показаний</dt><dd>{formatDate(scenario.sourceTimestamp)}</dd></div><div><dt>Идентификатор объекта в выборке</dt><dd>{scenario.objectId}</dd></div></dl>
-        <div className="model-demo-sensors">{scenario.sensors.map((sensor) => <article key={sensor.id}><div><b>{sensor.name}</b><small>{sensor.picket ?? "Пикет не указан"}</small></div><span className={`sensor-state ${sensor.state}`}>{sensor.value}</span></article>)}</div>
+        <div className="panel-head"><div><h2>Проверка обученной модели</h2><p>Расчёт риска для объекта</p></div><div className="model-demo-record">{dangerous !== undefined && <span className={`model-demo-example ${dangerous ? "danger" : "safe"}`}>{dangerous ? "Тревожный пример" : "Штатный пример"}</span>}<span className="model-demo-counter">Запись {state.index + 1} из {state.scenarios.length}</span></div></div>
+        <dl className="facts model-demo-summary"><div><dt>Сценарий</dt><dd>{modelDemoScenarioLabel(scenario.inputs)}</dd></div><div><dt>Объект</dt><dd>{scenario.objectName}</dd></div><div><dt>Контрольные каналы</dt><dd>{channelSummary}</dd></div><div><dt>Время показаний</dt><dd>{formatDate(scenario.sourceTimestamp)}</dd></div></dl>
         <div className="model-demo-actions"><button className="secondary" disabled={!!state.busy} onClick={() => dispatch({ type: "next" })}>Следующие показания</button><button className="primary" disabled={!!state.busy} onClick={predict}>{state.busy === "predicting" ? "Расчёт…" : "Рассчитать прогноз"}</button><button className="danger-outline" disabled={!!state.busy} onClick={clear}>Очистить результаты демонстрации</button></div>
       </section>
-      {state.calculation && <section className="panel model-demo-result">
-        <div className="panel-head"><div><h2>Результат прогноза</h2><p>Рассчитано {formatDate(state.calculation.prediction.calculatedAt)}</p></div></div>
-        <div className="model-demo-probabilities">{[["Сейчас", state.calculation.prediction.pNow], ["6 часов", state.calculation.prediction.p6h], ["12 часов", state.calculation.prediction.p12h], ["24 часа", state.calculation.prediction.p24h]].map(([label, value]) => <div key={String(label)}><span>{label}</span><strong>{percent(value as number)}</strong></div>)}</div>
-        <div className="model-demo-factors"><h3>Основные факторы</h3>{state.calculation.prediction.factors.slice(0, 5).map((factor, index) => <div key={`${factor.horizon}-${factor.feature}-${index}`}><b>{modelFactorLabel(factor.feature)}</b><span>{factor.contribution >= 0 ? "+" : ""}{factor.contribution.toFixed(3)}</span></div>)}</div>
-        <div className="model-demo-actions"><button className="primary" disabled={!!state.busy || !!state.alertId || !canPublishModelDemo(state.calculation.prediction.decisions)} onClick={publish}>{state.alertId ? "Передано диспетчеру" : state.busy === "publishing" ? "Передача…" : "Передать диспетчеру"}</button>{state.alertId && (role === "district_dispatcher" || role === "ods_dispatcher") && <button className="secondary" onClick={() => navigate(`/alerts/${state.alertId}`)}>Открыть предупреждение</button>}</div>
-        {!canPublishModelDemo(state.calculation.prediction.decisions) && <p className="muted model-demo-hint">Порог предупреждения не превышен — передача диспетчеру не требуется.</p>}
-      </section>}
+      <div className="model-demo-layout">
+        <section className="panel model-demo-input"><div className="panel-head"><div><h2>Входные данные</h2><p>{scenario.district} · {scenario.dangerousSection}</p></div></div><dl className="model-demo-inputs">{scenario.inputs.map((input) => <div key={input.label}><dt>{input.label}</dt><dd>{input.value}</dd></div>)}</dl><div className="model-demo-sensors">{scenario.sensors.map((sensor) => <article key={sensor.id}><div><b>{sensor.name}</b><small>{sensor.picket ?? "Пикет не указан"}</small></div><span className={`sensor-state ${sensor.state}`}>{sensor.value}</span></article>)}</div></section>
+        <section className="panel model-demo-result"><div className="panel-head"><div><h2>Результат прогноза</h2>{state.calculation && <p>Рассчитано {formatDate(state.calculation.prediction.calculatedAt)}</p>}</div></div>{state.calculation ? <><div className="model-demo-probabilities">{[["Сейчас", state.calculation.prediction.pNow], ["6 часов", state.calculation.prediction.p6h], ["12 часов", state.calculation.prediction.p12h], ["24 часа", state.calculation.prediction.p24h]].map(([label, value]) => <div key={String(label)}><span>{label}</span><strong>{percent(value as number)}</strong></div>)}</div><div className="model-demo-actions"><button className="primary" disabled={!!state.busy || !!state.alertId || !canPublishModelDemo(state.calculation.prediction.decisions)} onClick={publish}>{state.alertId ? "Передано диспетчеру" : state.busy === "publishing" ? "Передача…" : "Передать диспетчеру"}</button>{state.alertId && (role === "district_dispatcher" || role === "ods_dispatcher") && <button className="secondary" onClick={() => navigate(`/alerts/${state.alertId}`)}>Открыть предупреждение</button>}</div>{!canPublishModelDemo(state.calculation.prediction.decisions) && <p className="muted model-demo-hint">Порог предупреждения не превышен. Передача диспетчеру не требуется.</p>}</> : <div className="model-demo-empty">Нажмите «Рассчитать прогноз»</div>}</section>
+      </div>
+      {state.calculation && <section className="panel model-demo-factors"><h2>Факторы прогноза</h2><div className="model-demo-factor-list">{uniqueModelFactors(state.calculation.prediction.factors).slice(0, 5).map((factor) => <div key={factor.feature}><b>{modelFactorLabel(factor.feature)}</b><span className={factor.contribution > 0 ? "raises" : factor.contribution < 0 ? "lowers" : "neutral"}>{modelFactorInfluence(factor.contribution)}</span></div>)}</div></section>}
     </>}
   </>;
 }
