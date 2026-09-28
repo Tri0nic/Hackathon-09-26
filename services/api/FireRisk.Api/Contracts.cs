@@ -4,7 +4,21 @@ using System.Text.Json.Serialization;
 namespace FireRisk.Api;
 
 public sealed record DecisionRequest(string Decision, string? Comment);
-public sealed record CreateMaintenanceRequest(string? Recommendation);
+public sealed record CreateMaintenanceRequest(
+    string? Recommendation,
+    RequestKind RequestKind,
+    ExecutorGroup ExecutorGroup,
+    RequestPriority Priority,
+    string Description,
+    DateTimeOffset? DueAt,
+    string? Comment,
+    RequestCreatorRole CreatorRole);
+public sealed record ClaimMaintenanceRequest(string EmployeeId, string EmployeeName, ExecutorGroup ExecutorGroup);
+public sealed record ExecuteRequestAction(
+    string EmployeeId,
+    string EmployeeName,
+    ExecutorRequestAction Action,
+    string? Comment);
 public sealed record ChangeRequestStatus(MaintenanceStatus Status);
 public sealed record PredictRequest(Dictionary<string, double?> Features, int TopK = 5);
 

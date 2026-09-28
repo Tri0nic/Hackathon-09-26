@@ -79,6 +79,66 @@ td b { font-weight: 500; }
 .field { display: grid; gap: 6px; margin: 12px 0; color: var(--muted); font-size: 12px; }.field textarea { resize: vertical; min-height: 70px; }.success-message { color: var(--green); font-size: 12px; margin-left: 10px; }
 .timeline > div { display: flex; gap: 10px; margin-top: 12px; }.timeline i { display: block; width: 10px; height: 10px; margin-top: 4px; background: currentColor; border-radius: 50%; }.timeline small { margin-top: 4px; }
 .notice { margin: 0 0 14px; padding: 11px 14px; border: 1px solid; border-radius: 5px; font-size: 13px; }.notice.info { color: #245a94; background: #edf6ff; border-color: #bed8f3; }.notice.warning { color: #85590a; background: #fff7e5; border-color: #ead096; }
-.delivery { display: inline-flex; padding: 4px 7px; border-radius: 4px; font-size: 11px; }.delivery.delivered { background: #e8f7ef; color: #28774f; }.delivery.queued { background: #fff5dc; color: #8d600c; }.delivery.failed { background: #fff0f1; color: #b12831; }
+.delivery { display: inline-flex; padding: 4px 7px; border-radius: 4px; font-size: 11px; }.delivery.delivered { background: #e8f7ef; color: #28774f; }.delivery.failed { background: #fff0f1; color: #b12831; }
+.sms-table table { min-width: 1320px; }
+.sms-row td:first-child { white-space: nowrap; }
+.sms-row a { color: inherit; }
+.processing { display: inline-flex; padding: 4px 7px; border-radius: 4px; font-size: 11px; white-space: nowrap; }
+.processing.undelivered { background: #fff0f1; color: #b12831; }
+.processing.new { background: #fff7e7; color: #8a6517; }
+.processing.in_progress { background: #edf6ff; color: #245a94; }
+.processing.completed { background: #e8f7ef; color: #28774f; }
+.mail-back { margin-bottom: 14px; }
+.mail-window { padding: 0; overflow: hidden; max-width: 1120px; }
+.mail-toolbar { min-height: 52px; padding: 12px 22px; background: #f6f7fa; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; color: var(--muted); }
+.mail-window > h1 { font-size: 23px; font-weight: 500; margin: 0; padding: 24px 28px 18px; }
+.mail-meta { display: flex; gap: 14px; padding: 0 28px 24px; border-bottom: 1px solid var(--border); }
+.mail-avatar { flex: 0 0 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; background: #ece9fb; color: #5544c5; font-weight: 600; }
+.mail-meta dl { margin: 0; display: grid; gap: 5px; font-size: 13px; }
+.mail-meta dl div { display: grid; grid-template-columns: 55px 1fr; }
+.mail-meta dt { color: var(--muted); }.mail-meta dd { margin: 0; }
+.mail-body { padding: 26px 70px 38px; line-height: 1.55; }
+.mail-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 22px 0 28px; }
+.mail-summary div { padding: 13px 15px; background: #f7f8fb; border-left: 3px solid #d9d4f2; }
+.mail-summary span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+.mail-summary b { font-size: 13px; font-weight: 500; }
+.mail-body h2 { margin: 26px 0 8px; font-size: 15px; }
+.mail-sensors { border: 1px solid var(--border); border-radius: 5px; }
+.mail-sensors > div { display: flex; align-items: center; justify-content: space-between; padding: 11px 14px; border-top: 1px solid var(--border); }
+.mail-sensors > div:first-child { border-top: 0; }
+.mail-original { margin-top: 28px; padding: 15px; background: #f7f8fb; border-left: 3px solid var(--accent); }
+.mail-original p { margin: 6px 0 0; }
 .metric-source { font-size: 18px; line-height: 1.45; margin: 20px 0; }.empty, .loading { padding: 50px; color: var(--muted); text-align: center; }.loading { min-height: 100vh; display: grid; place-items: center; }
+.request-form { max-width: 920px; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.form-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 18px; }
+.button.secondary { display: inline-flex; align-items: center; text-decoration: none; }
+button.compact { padding: 8px 12px; white-space: nowrap; }
+.request-actions { display: flex; align-items: center; gap: 6px; min-width: 430px; }
+.success-button, .danger-button { color: #fff; }
+.success-button { background: var(--green); }
+.danger-button { background: #bd3038; }
+.success-button:hover { background: #26764f; }
+.danger-button:hover { background: #a4252d; }
+button:disabled { opacity: .65; cursor: wait; }
+.icon-button { min-width: 36px; padding: 5px 10px; background: transparent; color: var(--muted); font-size: 22px; }
+.icon-button.release { border: 1px solid #e4b9bc; color: #a4252d; font-size: 18px; }
+.request-comments { margin-top: 9px; max-width: 440px; }
+.request-comments summary { cursor: pointer; color: #5645c1; font-size: 12px; }
+.request-comments article { margin-top: 8px; padding: 9px 10px; border-left: 2px solid #d9d4f2; background: #f8f7fd; }
+.request-comments article b, .request-comments article time { display: inline; font-size: 11px; }
+.request-comments article time { margin-left: 8px; color: var(--muted); }
+.request-comments article p { margin: 5px 0 0; line-height: 1.4; }
+.modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 24px; background: rgba(25, 22, 38, .48); }
+.modal { width: min(590px, 100%); padding: 22px; border-radius: 8px; background: #fff; box-shadow: 0 18px 55px rgba(25, 22, 38, .24); }
+.modal-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.modal-head h2 { font-size: 21px; }
+.modal-head p, .modal-hint { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+.action-summary { display: grid; gap: 9px; margin: 20px 0; padding: 14px; background: #f7f8fb; }
+.action-summary div { display: grid; grid-template-columns: 100px 1fr; gap: 12px; }
+.action-summary dt { color: var(--muted); font-size: 12px; }
+.action-summary dd { margin: 0; font-size: 13px; }
+.modal-hint { margin: 12px 0; }
+.warning-text { color: #a4252d; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 @media (max-width: 1250px) { .kpi-grid { grid-template-columns: repeat(2, 1fr); }.object-cards { grid-template-columns: repeat(2, 1fr); }.detail-grid.thirds { grid-template-columns: 1fr; }.content { padding: 22px 20px; } }

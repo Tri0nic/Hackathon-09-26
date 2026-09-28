@@ -1,6 +1,38 @@
 export type RiskLevel = "black" | "red" | "yellow" | "green";
 export type AlertKind = "fire" | "malfunction";
 export type RequestStatus = "new" | "under_review" | "scheduled" | "in_progress" | "completed" | "rejected";
+export type SmsDeliveryStatus = "delivered" | "failed";
+export type SmsProcessingStatus = "undelivered" | "new" | "in_progress" | "completed" | "cancelled";
+export type UserRole = "technician" | "district_dispatcher" | "ods_dispatcher" | "response_team";
+export type ExecutorGroup = "technician" | "response_team";
+export type RequestPriority = "normal" | "high" | "emergency";
+export type RequestKind = "inspection" | "repair" | "emergency";
+export type ExecutorRequestAction = "comment" | "release" | "complete" | "cancel";
+
+export interface RequestComment {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface Employee {
+  id: string;
+  name: string;
+  group: ExecutorGroup;
+}
+
+export interface CreateRequestInput {
+  alertId: string;
+  requestKind: RequestKind;
+  executorGroup: ExecutorGroup;
+  priority: RequestPriority;
+  description: string;
+  dueAt?: string;
+  comment?: string;
+  creatorRole: Extract<UserRole, "district_dispatcher" | "ods_dispatcher">;
+}
 
 export interface Channel {
   id: string;
@@ -65,6 +97,16 @@ export interface MaintenanceRequest {
   objectName: string;
   picket?: string;
   recommendation: string;
+  requestKind: RequestKind;
+  executorGroup: ExecutorGroup;
+  priority: RequestPriority;
+  description: string;
+  dueAt?: string;
+  comment?: string;
+  creatorRole: string;
+  assigneeId?: string;
+  assigneeName?: string;
+  comments: RequestComment[];
   status: RequestStatus;
   createdAt: string;
   updatedAt: string;
@@ -73,12 +115,18 @@ export interface MaintenanceRequest {
 export interface SmsNotification {
   id: string;
   episodeId: string;
+  episodeTitle: string;
   alertLevel: RiskLevel;
   recipientId: string;
   role: string;
+  recipientName: string;
   sentAt: string;
   content: string;
-  status: "queued" | "delivered" | "failed";
+  incidentSummary: string;
+  assigneeName?: string;
+  status: SmsDeliveryStatus;
+  processingStatus: SmsProcessingStatus;
+  requestId?: string;
 }
 
 export interface ModelMetrics {

@@ -4,10 +4,9 @@ using Npgsql;
 
 namespace FireRisk.Api;
 
-public sealed class PgStore(NpgsqlDataSource dataSource, IConfiguration configuration)
+public sealed class PgStore(NpgsqlDataSource dataSource)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private readonly TimeSpan _smsCooldown = TimeSpan.FromMinutes(configuration.GetValue("Sms:CooldownMinutes", 30));
 
     public async Task MigrateAsync(CancellationToken cancellationToken = default)
     {
@@ -143,27 +142,68 @@ public sealed class PgStore(NpgsqlDataSource dataSource, IConfiguration configur
         return id;
     }
 
-    public async Task<Guid> AddRequestAsync(Guid alertId, string? recommendation, CancellationToken ct)
+    public async Task<Guid> AddRequestAsync(Guid alertId, CreateMaintenanceRequest request, CancellationToken ct)
     {
+        if (!RequestPolicy.CanCreate(request.CreatorRole, request.ExecutorGroup, request.Priority))
+            throw new InvalidOperationException("This dispatcher cannot create the requested assignment");
         var id = Guid.NewGuid();
-        await using var command = dataSource.CreateCommand("""
-            insert into maintenance_requests(id, alert_id, object_id, picket, factors, recommendation, status, created_at, updated_at)
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        await using var command = new NpgsqlCommand("""
+            insert into maintenance_requests(id, alert_id, object_id, picket, factors, recommendation,
+              request_kind, executor_group, priority, description, due_at, comment, creator_role,
+              status, created_at, updated_at)
             select @id, a.id, a.object_id,
               (select min(picket_raw) from data_channels where object_id=a.object_id and picket_sort_key is not null),
-              a.factors, coalesce(@recommendation, a.recommendation), 'new', now(), now()
+              a.factors, coalesce(@recommendation, a.recommendation), @kind, @executor, @priority,
+              @description, @dueAt, @comment, @creator, 'new', now(), now()
             from risk_alerts a where a.id=@alertId
-            """);
+            """, connection, transaction);
         command.Parameters.AddWithValue("id", id);
         command.Parameters.AddWithValue("alertId", alertId);
-        command.Parameters.AddWithValue("recommendation", (object?)recommendation ?? DBNull.Value);
+        command.Parameters.AddWithValue("recommendation", (object?)request.Recommendation ?? DBNull.Value);
+        command.Parameters.AddWithValue("kind", EnumName(request.RequestKind));
+        command.Parameters.AddWithValue("executor", EnumName(request.ExecutorGroup));
+        command.Parameters.AddWithValue("priority", EnumName(request.Priority));
+        command.Parameters.AddWithValue("description", request.Description.Trim());
+        command.Parameters.AddWithValue("dueAt", (object?)request.DueAt ?? DBNull.Value);
+        command.Parameters.AddWithValue("comment", (object?)request.Comment ?? DBNull.Value);
+        command.Parameters.AddWithValue("creator", EnumName(request.CreatorRole));
         if (await command.ExecuteNonQueryAsync(ct) == 0) throw new KeyNotFoundException("Alert not found");
+
+        foreach (var recipient in RequestNotificationPolicy.Recipients(request.ExecutorGroup))
+        {
+            await using var sms = new NpgsqlCommand("""
+                insert into sms_notifications(id, episode_id, alert_level, recipient_id, recipient_name, role,
+                  request_id, sent_at, content, status, processing_status)
+                select @smsId, a.episode_id, a.level, @recipientId, @recipientName, @role,
+                  @requestId, now(), @content, 'delivered', 'new'
+                from risk_alerts a where a.id=@alertId
+                """, connection, transaction);
+            sms.Parameters.AddWithValue("smsId", Guid.NewGuid());
+            sms.Parameters.AddWithValue("recipientId", recipient.Id);
+            sms.Parameters.AddWithValue("recipientName", recipient.Name);
+            sms.Parameters.AddWithValue("role", request.ExecutorGroup == ExecutorGroup.Technician ? "Technician" : "ResponseTeam");
+            sms.Parameters.AddWithValue("requestId", id);
+            sms.Parameters.AddWithValue("alertId", alertId);
+            sms.Parameters.AddWithValue("content", $"Создана заявка: {request.Description.Trim()}");
+            await sms.ExecuteNonQueryAsync(ct);
+        }
+        await transaction.CommitAsync(ct);
         return id;
     }
 
     public Task<JsonElement> GetRequestsAsync(CancellationToken ct) => JsonAsync("""
         select coalesce(json_agg(row_to_json(x) order by x."createdAt" desc), '[]'::json)::text from (
           select r.id, r.alert_id "alertId", r.object_id "objectId", o.name "objectName", r.picket,
-            r.factors, r.recommendation, r.status, r.created_at "createdAt", r.updated_at "updatedAt"
+            r.factors, r.recommendation, r.request_kind "requestKind", r.executor_group "executorGroup",
+            r.priority, r.description, r.due_at "dueAt", r.comment, r.creator_role "creatorRole",
+            r.assignee_id "assigneeId", r.assignee_name "assigneeName",
+            coalesce((select json_agg(json_build_object(
+              'id', c.id, 'employeeId', c.employee_id, 'employeeName', c.employee_name,
+              'text', c.comment_text, 'createdAt', c.created_at
+            ) order by c.created_at) from request_comments c where c.request_id=r.id), '[]'::json) comments,
+            r.status, r.created_at "createdAt", r.updated_at "updatedAt"
           from maintenance_requests r join infrastructure_objects o on o.id=r.object_id
         ) x
         """, ct);
@@ -181,13 +221,153 @@ public sealed class PgStore(NpgsqlDataSource dataSource, IConfiguration configur
         update.Parameters.AddWithValue("id", id);
         update.Parameters.AddWithValue("status", StatusName(requested));
         await update.ExecuteNonQueryAsync(ct);
+        if (requested == MaintenanceStatus.Completed)
+        {
+            await using var sms = dataSource.CreateCommand("""
+                update sms_notifications set processing_status='completed'
+                where request_id=@id and status='delivered'
+                """);
+            sms.Parameters.AddWithValue("id", id);
+            await sms.ExecuteNonQueryAsync(ct);
+        }
         return true;
+    }
+
+    public async Task<ClaimRequestResult> ClaimRequestAsync(Guid id, string employeeId, string employeeName, ExecutorGroup group, CancellationToken ct)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        await using var command = new NpgsqlCommand("""
+            update maintenance_requests
+            set assignee_id=@employeeId, assignee_name=@employeeName, status='in_progress', updated_at=now()
+            where id=@id and assignee_id is null and executor_group=@executor and status not in ('completed','rejected')
+            """, connection, transaction);
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("employeeId", employeeId);
+        command.Parameters.AddWithValue("employeeName", employeeName);
+        command.Parameters.AddWithValue("executor", EnumName(group));
+        if (await command.ExecuteNonQueryAsync(ct) == 1)
+        {
+            await using var sms = new NpgsqlCommand("""
+                update sms_notifications set assignee_name=@employeeName, processing_status='in_progress'
+                where request_id=@id and status='delivered'
+                """, connection, transaction);
+            sms.Parameters.AddWithValue("id", id);
+            sms.Parameters.AddWithValue("employeeName", employeeName);
+            await sms.ExecuteNonQueryAsync(ct);
+            await transaction.CommitAsync(ct);
+            return ClaimRequestResult.Claimed;
+        }
+
+        await transaction.RollbackAsync(ct);
+        await using var exists = dataSource.CreateCommand("select exists(select 1 from maintenance_requests where id=@id)");
+        exists.Parameters.AddWithValue("id", id);
+        return Convert.ToBoolean(await exists.ExecuteScalarAsync(ct)) ? ClaimRequestResult.AlreadyAssigned : ClaimRequestResult.NotFound;
+    }
+
+    public async Task<ExecutorActionResult> ExecuteRequestActionAsync(Guid id, ExecuteRequestAction request, CancellationToken ct)
+    {
+        if (!ExecutorActionPolicy.HasValidComment(request.Action, request.Comment))
+            return ExecutorActionResult.CommentRequired;
+
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        string? assigneeId;
+        string? status;
+        await using (var read = new NpgsqlCommand("select assignee_id, status from maintenance_requests where id=@id for update", connection, transaction))
+        {
+            read.Parameters.AddWithValue("id", id);
+            await using var reader = await read.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct)) return ExecutorActionResult.NotFound;
+            assigneeId = reader.IsDBNull(0) ? null : reader.GetString(0);
+            status = reader.GetString(1);
+        }
+
+        if (!ExecutorActionPolicy.CanAct(request.EmployeeId, assigneeId, ParseStatus(status)))
+            return ExecutorActionResult.Forbidden;
+
+        if (!string.IsNullOrWhiteSpace(request.Comment))
+        {
+            await using var comment = new NpgsqlCommand("""
+                insert into request_comments(id, request_id, employee_id, employee_name, comment_text, created_at)
+                values(@id, @requestId, @employeeId, @employeeName, @text, now())
+                """, connection, transaction);
+            comment.Parameters.AddWithValue("id", Guid.NewGuid());
+            comment.Parameters.AddWithValue("requestId", id);
+            comment.Parameters.AddWithValue("employeeId", request.EmployeeId);
+            comment.Parameters.AddWithValue("employeeName", request.EmployeeName);
+            comment.Parameters.AddWithValue("text", request.Comment.Trim());
+            await comment.ExecuteNonQueryAsync(ct);
+        }
+
+        var (nextStatus, clearAssignee, smsStatus) = request.Action switch
+        {
+            ExecutorRequestAction.Release => ("new", true, "new"),
+            ExecutorRequestAction.Complete => ("completed", false, "completed"),
+            ExecutorRequestAction.Cancel => ("rejected", false, "cancelled"),
+            _ => ("in_progress", false, "in_progress")
+        };
+        await using (var update = new NpgsqlCommand("""
+            update maintenance_requests
+            set status=@status,
+                assignee_id=case when @clear then null else assignee_id end,
+                assignee_name=case when @clear then null else assignee_name end,
+                updated_at=now()
+            where id=@id
+            """, connection, transaction))
+        {
+            update.Parameters.AddWithValue("id", id);
+            update.Parameters.AddWithValue("status", nextStatus);
+            update.Parameters.AddWithValue("clear", clearAssignee);
+            await update.ExecuteNonQueryAsync(ct);
+        }
+        await using (var sms = new NpgsqlCommand("""
+            update sms_notifications
+            set processing_status=@status,
+                assignee_name=case when @clear then null else assignee_name end
+            where request_id=@id and status='delivered'
+            """, connection, transaction))
+        {
+            sms.Parameters.AddWithValue("id", id);
+            sms.Parameters.AddWithValue("status", smsStatus);
+            sms.Parameters.AddWithValue("clear", clearAssignee);
+            await sms.ExecuteNonQueryAsync(ct);
+        }
+        await transaction.CommitAsync(ct);
+        return ExecutorActionResult.Updated;
     }
 
     public Task<JsonElement> GetSmsAsync(CancellationToken ct) => JsonAsync("""
         select coalesce(json_agg(row_to_json(x) order by x."sentAt" desc), '[]'::json)::text from (
-          select id, episode_id "episodeId", alert_level "alertLevel", recipient_id "recipientId",
-            role, sent_at "sentAt", content, status from sms_notifications
+          select s.id, s.episode_id "episodeId",
+            case
+              when a.alert_kind = 'malfunction' then 'Технический сбой · ' || coalesce(o.name, 'Объект не указан')
+              when s.alert_level = 'black' then 'Критическое событие · ' || coalesce(o.name, 'Объект не указан')
+              else 'Пожарный риск · ' || coalesce(o.name, 'Объект не указан')
+            end "episodeTitle",
+            s.alert_level "alertLevel", s.recipient_id "recipientId",
+            case s.role
+              when 'Technician' then 'Техник'
+              when 'DistrictDispatcher' then 'Диспетчер района'
+              when 'OdsDispatcher' then 'Диспетчер ОДС'
+              when 'ResponseTeam' then 'Группа реагирования'
+              else s.role
+            end role,
+            coalesce(s.recipient_name, case s.role
+              when 'Technician' then 'Техник объекта'
+              when 'DistrictDispatcher' then 'Диспетчер района'
+              when 'OdsDispatcher' then 'Дежурный диспетчер ОДС'
+              when 'ResponseTeam' then 'Группа немедленного реагирования'
+              else s.recipient_id
+            end) "recipientName",
+            s.sent_at "sentAt", s.content,
+            coalesce(a.factors->0->>'label', a.recommendation, 'Причина не указана') "incidentSummary",
+            coalesce(s.assignee_name, r.assignee_name) "assigneeName", s.status, s.processing_status "processingStatus",
+            s.request_id "requestId"
+          from sms_notifications s
+          left join risk_alerts a on a.episode_id = s.episode_id and a.current
+          left join infrastructure_objects o on o.id = a.object_id
+          left join maintenance_requests r on r.id = s.request_id
         ) x
         """, ct);
 
@@ -290,46 +470,8 @@ public sealed class PgStore(NpgsqlDataSource dataSource, IConfiguration configur
             await history.ExecuteNonQueryAsync(ct);
         }
 
-        await DispatchSmsAsync(connection, transaction, episodeId, risk.Value.Level, prediction.CalculatedAt, levelChanged, ct);
         await transaction.CommitAsync(ct);
         return alertId;
-    }
-
-    private async Task DispatchSmsAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string episodeId, string levelName, DateTimeOffset now, bool levelChanged, CancellationToken ct)
-    {
-        var level = Enum.Parse<AlertLevel>(levelName, true);
-        foreach (var role in Enum.GetValues<RecipientRole>().Where(r => r != RecipientRole.None && SmsPolicy.Recipients(level).HasFlag(r)))
-        {
-            var recipient = role.ToString();
-            await using var last = new NpgsqlCommand("""
-                select max(sent_at) from sms_notifications
-                where episode_id=@episode and alert_level=@level and recipient_id=@recipient
-                """, connection, transaction);
-            last.Parameters.AddWithValue("episode", episodeId);
-            last.Parameters.AddWithValue("level", levelName);
-            last.Parameters.AddWithValue("recipient", recipient);
-            var value = await last.ExecuteScalarAsync(ct);
-            var lastSent = value switch
-            {
-                DateTimeOffset timestamp => timestamp,
-                DateTime timestamp => new DateTimeOffset(timestamp),
-                _ => (DateTimeOffset?)null
-            };
-            if (!SmsPolicy.CanSend(lastSent, now, _smsCooldown, levelChanged)) continue;
-
-            await using var insert = new NpgsqlCommand("""
-                insert into sms_notifications(id,episode_id,alert_level,recipient_id,role,sent_at,content,status)
-                values(@id,@episode,@level,@recipient,@role,@at,@content,'delivered')
-                """, connection, transaction);
-            insert.Parameters.AddWithValue("id", Guid.NewGuid());
-            insert.Parameters.AddWithValue("episode", episodeId);
-            insert.Parameters.AddWithValue("level", levelName);
-            insert.Parameters.AddWithValue("recipient", recipient);
-            insert.Parameters.AddWithValue("role", recipient);
-            insert.Parameters.AddWithValue("at", now);
-            insert.Parameters.AddWithValue("content", $"Пожарный риск {levelName}: эпизод {episodeId}");
-            await insert.ExecuteNonQueryAsync(ct);
-        }
     }
 
     private static (string Level, string Horizon, double Probability)? SelectRisk(MlPrediction p)
@@ -376,4 +518,7 @@ public sealed class PgStore(NpgsqlDataSource dataSource, IConfiguration configur
         "in_progress" => MaintenanceStatus.InProgress,
         _ => Enum.Parse<MaintenanceStatus>(value, true)
     };
+
+    private static string EnumName<T>(T value) where T : struct, Enum =>
+        string.Concat(value.ToString().Select((character, index) => index > 0 && char.IsUpper(character) ? $"_{char.ToLowerInvariant(character)}" : char.ToLowerInvariant(character).ToString()));
 }

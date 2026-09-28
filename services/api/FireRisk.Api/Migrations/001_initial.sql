@@ -94,6 +94,28 @@ create table if not exists maintenance_requests (
     updated_at timestamptz not null
 );
 
+alter table maintenance_requests add column if not exists request_kind text not null default 'inspection';
+alter table maintenance_requests add column if not exists executor_group text not null default 'technician';
+alter table maintenance_requests add column if not exists priority text not null default 'normal';
+alter table maintenance_requests add column if not exists description text not null default 'Провести проверку объекта';
+alter table maintenance_requests add column if not exists due_at timestamptz;
+alter table maintenance_requests add column if not exists comment text;
+alter table maintenance_requests add column if not exists creator_role text not null default 'district_dispatcher';
+alter table maintenance_requests add column if not exists assignee_id text;
+alter table maintenance_requests add column if not exists assignee_name text;
+
+create table if not exists request_comments (
+    id uuid primary key,
+    request_id uuid not null references maintenance_requests(id) on delete cascade,
+    employee_id text not null,
+    employee_name text not null,
+    comment_text text not null,
+    created_at timestamptz not null
+);
+
+create index if not exists ix_request_comments_request_time
+    on request_comments(request_id, created_at);
+
 create table if not exists sms_notifications (
     id uuid primary key,
     episode_id text not null,
@@ -104,6 +126,13 @@ create table if not exists sms_notifications (
     content text not null,
     status text not null
 );
+
+alter table sms_notifications add column if not exists assignee_name text;
+alter table sms_notifications add column if not exists processing_status text not null default 'waiting';
+alter table sms_notifications alter column processing_status set default 'new';
+update sms_notifications set processing_status='new' where processing_status='waiting' and status='delivered';
+alter table sms_notifications add column if not exists recipient_name text;
+alter table sms_notifications add column if not exists request_id uuid references maintenance_requests(id);
 
 create index if not exists ix_sms_dedup
     on sms_notifications(episode_id, alert_level, recipient_id, sent_at desc);
@@ -191,3 +220,51 @@ from (values
     ('red','OdsDispatcher','2026-09-27T12:42:00+03:00'::timestamptz,'deescalation')
 ) x(level, role, sent_at, note)
 on conflict (id) do nothing;
+
+update sms_notifications
+set assignee_name = 'Илья Сергеевич Иванов',
+    processing_status = 'in_progress',
+    status = 'delivered'
+where episode_id = 'EP-DEMO-MAIN';
+
+insert into sms_notifications(id, episode_id, alert_level, recipient_id, role, sent_at, content, status, assignee_name, processing_status)
+values
+    (md5('EP-DEMO-FAULT|yellow|OdsDispatcher')::uuid, 'EP-DEMO-FAULT', 'yellow', 'OdsDispatcher', 'OdsDispatcher', '2026-09-27T12:31:04+03:00', 'Технический сбой: потеря связи с каналом на Восточном участке', 'delivered', 'Наталья Викторовна Орлова', 'in_progress'),
+    (md5('EP-DEMO-GREEN|green|OdsDispatcher')::uuid, 'EP-DEMO-GREEN', 'green', 'OdsDispatcher', 'OdsDispatcher', '2026-09-27T12:14:05+03:00', 'Зелёный уровень: продолжить наблюдение за температурным трендом', 'delivered', 'Мария Андреевна Петрова', 'completed'),
+    (md5('EP-DEMO-BLACK|black|ResponseTeam')::uuid, 'EP-DEMO-BLACK', 'black', 'ResponseTeam', 'ResponseTeam', '2026-09-27T12:48:05+03:00', 'Чёрный уровень: немедленно проверить задымление на Южном участке', 'failed', null, 'undelivered')
+on conflict (id) do update set
+    content = excluded.content,
+    status = excluded.status,
+    assignee_name = excluded.assignee_name,
+    processing_status = excluded.processing_status;
+
+update sms_notifications
+set status = 'delivered',
+    processing_status = case when processing_status in ('completed', 'in_progress') then processing_status else 'in_progress' end
+where id <> md5('EP-DEMO-BLACK|black|ResponseTeam')::uuid;
+
+update sms_notifications
+set status = 'failed', assignee_name = null, processing_status = 'undelivered'
+where id = md5('EP-DEMO-BLACK|black|ResponseTeam')::uuid;
+
+-- The current notification contract starts at request creation. Remove legacy
+-- risk-level demo messages and seed one notification per target employee.
+delete from sms_notifications where request_id is null;
+
+insert into sms_notifications(
+    id, episode_id, alert_level, recipient_id, recipient_name, role, request_id,
+    sent_at, content, status, assignee_name, processing_status)
+values
+    (md5('REQ-DEMO|tech-ivanov')::uuid, 'EP-DEMO-GREEN', 'green', 'tech-ivanov', 'Илья Сергеевич Иванов', 'Technician',
+     '77777777-7777-7777-7777-777777777777', '2026-09-27T12:20:03+03:00', 'Создана заявка: проверить температурный датчик', 'delivered', null, 'new'),
+    (md5('REQ-DEMO|tech-petrova')::uuid, 'EP-DEMO-GREEN', 'green', 'tech-petrova', 'Мария Андреевна Петрова', 'Technician',
+     '77777777-7777-7777-7777-777777777777', '2026-09-27T12:20:04+03:00', 'Создана заявка: проверить температурный датчик', 'delivered', null, 'new'),
+    (md5('REQ-DEMO|tech-sokolov')::uuid, 'EP-DEMO-GREEN', 'green', 'tech-sokolov', 'Алексей Дмитриевич Соколов', 'Technician',
+     '77777777-7777-7777-7777-777777777777', '2026-09-27T12:20:05+03:00', 'Создана заявка: проверить температурный датчик', 'failed', null, 'undelivered')
+on conflict (id) do nothing;
+
+update sms_notifications s
+set processing_status='new', assignee_name=null
+from maintenance_requests r
+where s.request_id=r.id and s.status='delivered' and r.assignee_id is null
+  and r.status not in ('completed','rejected');

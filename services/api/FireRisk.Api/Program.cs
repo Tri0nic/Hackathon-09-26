@@ -56,14 +56,39 @@ app.MapPost("/api/alerts/{id:guid}/decision", async (Guid id, DecisionRequest re
 
 app.MapPost("/api/alerts/{id:guid}/requests", async (Guid id, CreateMaintenanceRequest request, PgStore store, CancellationToken ct) =>
 {
-    try { return Results.Created("/api/requests", new { id = await store.AddRequestAsync(id, request.Recommendation, ct) }); }
+    if (string.IsNullOrWhiteSpace(request.Description)) return Results.BadRequest(new { error = "description is required" });
+    try { return Results.Created("/api/requests", new { id = await store.AddRequestAsync(id, request, ct) }); }
     catch (KeyNotFoundException) { return Results.NotFound(); }
+    catch (InvalidOperationException exception) { return Results.BadRequest(new { error = exception.Message }); }
 });
 app.MapGet("/api/requests", (PgStore store, CancellationToken ct) => store.GetRequestsAsync(ct));
 app.MapPatch("/api/requests/{id:guid}/status", async (Guid id, ChangeRequestStatus request, PgStore store, CancellationToken ct) =>
 {
     try { return await store.ChangeRequestStatusAsync(id, request.Status, ct) ? Results.NoContent() : Results.NotFound(); }
     catch (InvalidOperationException exception) { return Results.BadRequest(new { error = exception.Message }); }
+});
+app.MapPost("/api/requests/{id:guid}/claim", async (Guid id, ClaimMaintenanceRequest request, PgStore store, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(request.EmployeeId) || string.IsNullOrWhiteSpace(request.EmployeeName))
+        return Results.BadRequest(new { error = "employee is required" });
+    return await store.ClaimRequestAsync(id, request.EmployeeId, request.EmployeeName, request.ExecutorGroup, ct) switch
+    {
+        ClaimRequestResult.Claimed => Results.NoContent(),
+        ClaimRequestResult.AlreadyAssigned => Results.Conflict(new { error = "request already assigned" }),
+        _ => Results.NotFound()
+    };
+});
+app.MapPost("/api/requests/{id:guid}/executor-action", async (Guid id, ExecuteRequestAction request, PgStore store, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(request.EmployeeId) || string.IsNullOrWhiteSpace(request.EmployeeName))
+        return Results.BadRequest(new { error = "employee is required" });
+    return await store.ExecuteRequestActionAsync(id, request, ct) switch
+    {
+        ExecutorActionResult.Updated => Results.NoContent(),
+        ExecutorActionResult.CommentRequired => Results.BadRequest(new { error = "cancellation comment is required" }),
+        ExecutorActionResult.Forbidden => Results.StatusCode(403),
+        _ => Results.NotFound()
+    };
 });
 app.MapGet("/api/sms", (PgStore store, CancellationToken ct) => store.GetSmsAsync(ct));
 

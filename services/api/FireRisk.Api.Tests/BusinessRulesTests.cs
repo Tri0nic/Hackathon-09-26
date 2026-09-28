@@ -6,23 +6,70 @@ namespace FireRisk.Api.Tests;
 public sealed class BusinessRulesTests
 {
     [Theory]
-    [InlineData(AlertLevel.Green, RecipientRole.OdsDispatcher)]
-    [InlineData(AlertLevel.Yellow, RecipientRole.DistrictDispatcher | RecipientRole.OdsDispatcher)]
-    [InlineData(AlertLevel.Red, RecipientRole.Technician | RecipientRole.DistrictDispatcher | RecipientRole.OdsDispatcher)]
-    [InlineData(AlertLevel.Black, RecipientRole.Technician | RecipientRole.DistrictDispatcher | RecipientRole.OdsDispatcher | RecipientRole.ResponseTeam)]
-    public void Recipient_matrix_is_exact(AlertLevel level, RecipientRole expected)
+    [InlineData(RequestCreatorRole.OdsDispatcher, ExecutorGroup.ResponseTeam, RequestPriority.Emergency, true)]
+    [InlineData(RequestCreatorRole.OdsDispatcher, ExecutorGroup.Technician, RequestPriority.Normal, false)]
+    [InlineData(RequestCreatorRole.DistrictDispatcher, ExecutorGroup.Technician, RequestPriority.Normal, true)]
+    public void Request_creation_obeys_dispatcher_permissions(
+        RequestCreatorRole creator,
+        ExecutorGroup executor,
+        RequestPriority priority,
+        bool expected)
     {
-        Assert.Equal(expected, SmsPolicy.Recipients(level));
+        Assert.Equal(expected, RequestPolicy.CanCreate(creator, executor, priority));
+    }
+
+    [Theory]
+    [InlineData(ExecutorGroup.Technician, ExecutorGroup.Technician, null, true)]
+    [InlineData(ExecutorGroup.Technician, ExecutorGroup.ResponseTeam, null, false)]
+    [InlineData(ExecutorGroup.ResponseTeam, ExecutorGroup.ResponseTeam, "member-1", false)]
+    public void Only_matching_group_can_claim_an_unassigned_request(
+        ExecutorGroup actorGroup,
+        ExecutorGroup requestGroup,
+        string? assigneeId,
+        bool expected)
+    {
+        Assert.Equal(expected, RequestPolicy.CanClaim(actorGroup, requestGroup, assigneeId, MaintenanceStatus.New));
     }
 
     [Fact]
-    public void Duplicate_sms_is_blocked_during_cooldown_unless_forced()
+    public void Completed_request_cannot_be_claimed()
     {
-        var now = DateTimeOffset.Parse("2026-09-27T12:00:00Z");
-        var lastSentAt = now.AddMinutes(-10);
+        Assert.False(RequestPolicy.CanClaim(ExecutorGroup.Technician, ExecutorGroup.Technician, null, MaintenanceStatus.Completed));
+    }
 
-        Assert.False(SmsPolicy.CanSend(lastSentAt, now, TimeSpan.FromMinutes(30), force: false));
-        Assert.True(SmsPolicy.CanSend(lastSentAt, now, TimeSpan.FromMinutes(30), force: true));
+    [Theory]
+    [InlineData(ExecutorRequestAction.Comment, "Выполнена диагностика", true)]
+    [InlineData(ExecutorRequestAction.Release, "Нужен другой специалист", true)]
+    [InlineData(ExecutorRequestAction.Complete, "Заменён датчик", true)]
+    [InlineData(ExecutorRequestAction.Cancel, "", false)]
+    [InlineData(ExecutorRequestAction.Cancel, "Нет доступа к объекту", true)]
+    public void Executor_action_validates_required_comment(ExecutorRequestAction action, string comment, bool expected)
+    {
+        Assert.Equal(expected, ExecutorActionPolicy.HasValidComment(action, comment));
+    }
+
+    [Fact]
+    public void Only_current_assignee_can_change_request()
+    {
+        Assert.True(ExecutorActionPolicy.CanAct("tech-1", "tech-1", MaintenanceStatus.InProgress));
+        Assert.False(ExecutorActionPolicy.CanAct("tech-2", "tech-1", MaintenanceStatus.InProgress));
+        Assert.False(ExecutorActionPolicy.CanAct("tech-1", "tech-1", MaintenanceStatus.Completed));
+    }
+
+    [Fact]
+    public void Request_notification_reaches_every_technician()
+    {
+        var recipients = RequestNotificationPolicy.Recipients(ExecutorGroup.Technician);
+
+        Assert.Equal(new[] { "tech-ivanov", "tech-petrova", "tech-sokolov" }, recipients.Select(x => x.Id));
+    }
+
+    [Fact]
+    public void Request_notification_reaches_every_response_member()
+    {
+        var recipients = RequestNotificationPolicy.Recipients(ExecutorGroup.ResponseTeam);
+
+        Assert.Equal(new[] { "response-orlova", "response-volkov" }, recipients.Select(x => x.Id));
     }
 
     [Theory]
