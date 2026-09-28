@@ -63,11 +63,13 @@ test("создание RED demo-заявки рассылает SMS районн
     executorGroup: "technician",
     priority: "high",
     description: "Проверить перегрев кабельной линии",
+    comment: "Доступ через северный вход",
     creatorRole: "district_dispatcher"
   });
   const afterCreate = await api.load();
 
   const createdSms = afterCreate.sms.filter((sms) => sms.requestId === request.id);
+  expect(afterCreate.requests.find((item) => item.id === request.id)?.comment).toBe("Доступ через северный вход");
   expect(createdSms).toHaveLength(2);
   expect(createdSms.every((sms) => sms.processingStatus === "new")).toBe(true);
   await api.claimRequest(request.id, { id: "tech-ivanov", name: "Илья Сергеевич Иванов", group: "technician", districts: ["САО"], objectIds: ["demo-object-1"] });

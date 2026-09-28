@@ -247,3 +247,11 @@ test("журнал SMS не повторяет ответственного в �
 
   expect(html.match(/Илья Сергеевич Иванов/g)).toHaveLength(2);
 });
+
+test("BLACK в демонстрационном журнале уведомляет техника и всех сотрудников ГБР района", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/sms" initialRole="ods_dispatcher" />);
+
+  expect(html).toContain("Алексей Дмитриевич Соколов");
+  expect(html).toContain("Наталья Викторовна Орлова");
+  expect(html).toContain("Сергей Павлович Волков");
+});
