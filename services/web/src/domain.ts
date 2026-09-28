@@ -1,4 +1,6 @@
-import type { AlertKind, Channel, Employee, ExecutorGroup, RequestPriority, RiskLevel, RiskObject, SmsDeliveryStatus, SmsProcessingStatus, UserRole } from "./types";
+import type { Alert, AlertKind, Channel, Employee, ExecutorGroup, RequestPriority, RiskLevel, RiskObject, SmsDeliveryStatus, SmsProcessingStatus, UserRole } from "./types";
+
+export type DashboardHorizon = "now" | "6h" | "12h" | "24h";
 
 export const employees: Employee[] = [
   { id: "tech-ivanov", name: "Илья Сергеевич Иванов", group: "technician", districts: ["САО"], objectIds: ["demo-object-1"] },
@@ -63,6 +65,33 @@ export function riskLabel(level: RiskLevel): string {
     yellow: "Риск в течение 12 часов",
     green: "Риск в течение 24 часов"
   }[level];
+}
+
+export function probabilityAtHorizon(alert: Alert, horizon: DashboardHorizon): number {
+  return {
+    now: alert.pNow,
+    "6h": alert.p6h,
+    "12h": alert.p12h,
+    "24h": alert.p24h
+  }[horizon];
+}
+
+export function dashboardAlerts(
+  alerts: Alert[],
+  objects: RiskObject[],
+  district: string,
+  level: RiskLevel | "all"
+): Alert[] {
+  const objectIds = new Set(objects.filter((object) => district === "all" || object.district === district).map((object) => object.id));
+  return alerts.filter((alert) => alert.current && objectIds.has(alert.objectId) && (level === "all" || alert.level === level));
+}
+
+export function dashboardDistrict(role: UserRole, selected: string, districts: string[]): string {
+  return role === "ods_dispatcher" && districts.includes(selected) ? selected : "all";
+}
+
+export function countCriticalObjects(alerts: Alert[]): number {
+  return new Set(alerts.filter((alert) => alert.level === "black" || alert.level === "red").map((alert) => alert.objectId)).size;
 }
 
 export function alertKindLabel(kind: AlertKind): string {

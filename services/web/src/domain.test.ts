@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { alertKindLabel, allowedNavigation, canClaimRequest, canCreateRequest, createPublicRequestId, employees, picketPosition, profileFor, riskLabel, smsRecipientsForAlert, splitPickets } from "./domain";
+import { alertKindLabel, allowedNavigation, canClaimRequest, canCreateRequest, countCriticalObjects, createPublicRequestId, dashboardAlerts, dashboardDistrict, employees, picketPosition, probabilityAtHorizon, profileFor, riskLabel, smsRecipientsForAlert, splitPickets } from "./domain";
 import { demoData } from "./demo";
 
 describe("riskLabel", () => {
@@ -7,6 +7,39 @@ describe("riskLabel", () => {
     expect(riskLabel("green")).toBe("Риск в течение 24 часов");
     expect(riskLabel("black")).toBe("Событие сейчас");
   });
+});
+
+test("горизонт выбирает соответствующую вероятность предупреждения", () => {
+  const alert = demoData.alerts[0];
+
+  expect(probabilityAtHorizon(alert, "now")).toBe(alert.pNow);
+  expect(probabilityAtHorizon(alert, "6h")).toBe(alert.p6h);
+  expect(probabilityAtHorizon(alert, "12h")).toBe(alert.p12h);
+  expect(probabilityAtHorizon(alert, "24h")).toBe(alert.p24h);
+});
+
+test("панель ОДС фильтрует предупреждения одновременно по району и уровню", () => {
+  const alerts = dashboardAlerts(demoData.alerts, demoData.objects, "ЮАО", "black");
+
+  expect(alerts.map((alert) => alert.objectName)).toEqual(["Коллектор №9 · участок Южный"]);
+});
+
+test("панель не применяет сохранённый район к районному диспетчеру", () => {
+  expect(dashboardDistrict("district_dispatcher", "ЮАО", ["САО"])).toBe("all");
+  expect(dashboardDistrict("ods_dispatcher", "ЮАО", ["САО", "ЮАО"])).toBe("ЮАО");
+});
+
+test("панель не показывает исторические предупреждения", () => {
+  const data = structuredClone(demoData);
+  data.alerts[0].current = false;
+
+  expect(dashboardAlerts(data.alerts, data.objects, "all", "all").map((alert) => alert.id)).not.toContain(data.alerts[0].id);
+});
+
+test("критические риски считаются по объектам, а не по числу предупреждений", () => {
+  const alert = demoData.alerts.find((item) => item.level === "red")!;
+
+  expect(countCriticalObjects([alert, { ...alert, id: "second-alert" }])).toBe(1);
 });
 
 test("журнал предупреждений описывает только прогноз пожарного риска", () => {

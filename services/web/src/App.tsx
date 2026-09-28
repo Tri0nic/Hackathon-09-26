@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import { alertKindLabel, allowedNavigation, employees, formatDate, profileFor, requestStatusName, riskLabel, smsDeliveryStatusName, smsProcessingStatusName, visibleObjectsFor } from "./domain";
+import { alertKindLabel, allowedNavigation, countCriticalObjects, dashboardAlerts, dashboardDistrict, employees, formatDate, levelName, probabilityAtHorizon, profileFor, requestStatusName, riskLabel, smsDeliveryStatusName, smsProcessingStatusName, visibleObjectsFor } from "./domain";
 import { Empty, KindBadge, PageTitle, PicketMap, ProbabilityChart, RiskBadge } from "./components";
-import type { Alert, AppData, Employee, ExecutorGroup, ExecutorRequestAction, MaintenanceRequest, RequestKind, RequestPriority, RequestStatus, RiskObject, UserRole } from "./types";
+import type { DashboardHorizon } from "./domain";
+import type { Alert, AppData, Employee, ExecutorGroup, ExecutorRequestAction, MaintenanceRequest, RequestKind, RequestPriority, RequestStatus, RiskLevel, RiskObject, UserRole } from "./types";
 
 const nav = [
   ["/", "Обзор", "▦"], ["/objects", "Объекты", "⌘"], ["/alerts", "Предупреждения", "△"],
@@ -36,31 +37,53 @@ function Link({ to, setPath, children, className }: { to: string; setPath: (valu
   return <a href={to} className={className} onClick={(event) => { event.preventDefault(); go(to, setPath); }}>{children}</a>;
 }
 
-function Dashboard({ data, setPath }: { data: AppData; setPath: (path: string) => void }) {
-  const critical = data.alerts.filter((alert) => alert.level === "black" || alert.level === "red").length;
+function PersonLink({ id, name, setPath }: { id?: string; name: string; setPath: (value: string) => void }) {
+  const person = id ? employees.find((item) => item.id === id) : undefined;
+  return person ? <Link to={`/profile/${person.id}`} setPath={setPath} className="person-link">{name}</Link> : <>{name}</>;
+}
+
+const horizonNames: Record<DashboardHorizon, string> = { now: "Сейчас", "6h": "6 часов", "12h": "12 часов", "24h": "24 часа" };
+const riskLevels: RiskLevel[] = ["black", "red", "yellow", "green"];
+
+function Dashboard({ data, role, setPath }: { data: AppData; role: UserRole; setPath: (path: string) => void }) {
+  const [horizon, setHorizon] = useState<DashboardHorizon>("24h");
+  const [district, setDistrict] = useState("all");
+  const [level, setLevel] = useState<RiskLevel | "all">("all");
+  const districts = [...new Set(data.objects.map((object) => object.district))];
+  const activeDistrict = dashboardDistrict(role, district, districts);
+  const alerts = dashboardAlerts(data.alerts, data.objects, activeDistrict, level);
+  const objectIds = new Set(alerts.map((alert) => alert.objectId));
+  const objects = data.objects.filter((object) => objectIds.has(object.id));
+  const critical = countCriticalObjects(alerts);
+  const openRequests = data.requests.filter((request) => objectIds.has(request.objectId) && !["completed", "rejected"].includes(request.status)).length;
+  const primary = alerts[0];
   return <>
-    <PageTitle title="Мониторинг рисков" subtitle="Прогноз состояния инженерной инфраструктуры на 24 часа">
+    <PageTitle title="Мониторинг рисков" subtitle={`Прогноз состояния инженерной инфраструктуры: ${horizonNames[horizon].toLowerCase()}`}>
       <button className="secondary">Обновить данные</button>
     </PageTitle>
-    <div className="filters"><label>Горизонт <select><option>24 часа</option></select></label><label>Округ <select><option>Все округа</option></select></label><label>Тип риска <select><option>Все типы</option></select></label></div>
+    <div className="filters">
+      <label>Горизонт <select aria-label="Горизонт прогноза" value={horizon} onChange={(event) => setHorizon(event.target.value as DashboardHorizon)}><option value="24h">24 часа</option><option value="12h">12 часов</option><option value="6h">6 часов</option><option value="now">Сейчас</option></select></label>
+      {role === "ods_dispatcher" && <label>Район <select aria-label="Район" value={activeDistrict} onChange={(event) => setDistrict(event.target.value)}><option value="all">Все районы</option>{districts.map((item) => <option value={item} key={item}>{item}</option>)}</select></label>}
+      <label>Уровень тревоги <select aria-label="Уровень тревоги" value={level} onChange={(event) => setLevel(event.target.value as RiskLevel | "all")}><option value="all">Все уровни</option>{riskLevels.map((item) => <option value={item} key={item}>{levelName[item]}</option>)}</select></label>
+    </div>
     <div className="kpi-grid">
       <article className="kpi danger"><span>Критические риски</span><strong>{critical}</strong><small>требуют решения</small></article>
-      <article className="kpi warning"><span>Активные предупреждения</span><strong>{data.alerts.length}</strong><small>в текущих эпизодах</small></article>
-      <article className="kpi info"><span>Объекты под контролем</span><strong>{data.objects.length}</strong><small>{data.objects.length - critical} без критических отклонений</small></article>
-      <article className="kpi success"><span>Открытые заявки</span><strong>{data.requests.filter((request) => !["completed", "rejected"].includes(request.status)).length}</strong><small>профилактика и проверка</small></article>
+      <article className="kpi warning"><span>Активные предупреждения</span><strong>{alerts.length}</strong><small>в текущих эпизодах</small></article>
+      <article className="kpi info"><span>Объекты под контролем</span><strong>{objects.length}</strong><small>{Math.max(0, objects.length - critical)} без критических отклонений</small></article>
+      <article className="kpi success"><span>Открытые заявки</span><strong>{openRequests}</strong><small>профилактика и проверка</small></article>
     </div>
     <div className="dashboard-grid">
       <section className="panel wide"><div className="panel-head"><div><h2>Объекты внимания</h2><p>По максимальной вероятности активного риска</p></div><Link to="/objects" setPath={setPath}>Все объекты →</Link></div>
-        <div className="table-wrap"><table><thead><tr><th>Объект</th><th>Округ</th><th>Вероятность</th><th>Уровень</th></tr></thead><tbody>{data.objects.map((object) => <tr key={object.id} className="clickable" onClick={() => go(`/objects/${object.id}`, setPath)}><td><b>{object.name}</b><small>{object.channelCount} каналов</small></td><td>{object.district}</td><td><strong>{Math.round(object.probability * 100)}%</strong></td><td><RiskBadge level={object.level} /></td></tr>)}</tbody></table></div>
+        <div className="table-wrap"><table><thead><tr><th>Объект</th><th>Район</th><th>Вероятность</th><th>Уровень</th></tr></thead><tbody>{objects.map((object) => { const alert = alerts.find((item) => item.objectId === object.id); return <tr key={object.id} className="clickable" onClick={() => go(`/objects/${object.id}`, setPath)}><td><b>{object.name}</b><small>{object.channelCount} каналов</small></td><td>{object.district}</td><td><strong>{Math.round((alert ? probabilityAtHorizon(alert, horizon) : object.probability) * 100)}%</strong></td><td><RiskBadge level={alert?.level ?? object.level} /></td></tr>; })}</tbody></table></div>
       </section>
-      <section className="panel"><div className="panel-head"><div><h2>Динамика главного риска</h2><p>{data.alerts[0]?.objectName}</p></div></div>{data.alerts[0] && <ProbabilityChart alert={data.alerts[0]} />}</section>
+      <section className="panel"><div className="panel-head"><div><h2>Динамика главного риска</h2><p>{primary?.objectName}</p></div></div>{primary ? <ProbabilityChart alert={primary} /> : <Empty>Нет предупреждений по выбранным фильтрам.</Empty>}</section>
     </div>
-    <section className="panel"><div className="panel-head"><div><h2>Последние предупреждения</h2><p>Расчёты модели пожарного риска</p></div><Link to="/alerts" setPath={setPath}>Открыть журнал →</Link></div><AlertTable alerts={data.alerts} setPath={setPath} /></section>
+    <section className="panel"><div className="panel-head"><div><h2>Последние предупреждения</h2><p>Расчёты модели пожарного риска</p></div><Link to="/alerts" setPath={setPath}>Открыть журнал →</Link></div><AlertTable alerts={alerts} setPath={setPath} horizon={horizon} />{!alerts.length && <Empty>Нет предупреждений по выбранным фильтрам.</Empty>}</section>
   </>;
 }
 
-function AlertTable({ alerts, setPath }: { alerts: Alert[]; setPath: (path: string) => void }) {
-  return <div className="table-wrap"><table><thead><tr><th>Время</th><th>Объект и тип</th><th>Вероятность</th><th>Уровень и горизонт</th></tr></thead><tbody>{alerts.map((alert) => <tr key={alert.id} className="clickable" onClick={() => go(`/alerts/${alert.id}`, setPath)}><td>{formatDate(alert.calculatedAt)}</td><td><b>{alert.objectName}</b><small>{alertKindLabel(alert.kind)}</small></td><td><strong>{Math.round(alert.probability * 100)}%</strong></td><td><RiskBadge level={alert.level} /></td></tr>)}</tbody></table></div>;
+function AlertTable({ alerts, setPath, horizon }: { alerts: Alert[]; setPath: (path: string) => void; horizon?: DashboardHorizon }) {
+  return <div className="table-wrap"><table><thead><tr><th>Время</th><th>Объект и тип</th><th>Вероятность</th><th>Уровень и горизонт</th></tr></thead><tbody>{alerts.map((alert) => <tr key={alert.id} className="clickable" onClick={() => go(`/alerts/${alert.id}`, setPath)}><td>{formatDate(alert.calculatedAt)}</td><td><b>{alert.objectName}</b><small>{alertKindLabel(alert.kind)}</small></td><td><strong>{Math.round((horizon ? probabilityAtHorizon(alert, horizon) : alert.probability) * 100)}%</strong></td><td><RiskBadge level={alert.level} /></td></tr>)}</tbody></table></div>;
 }
 
 function ObjectsPage({ data, path, setPath }: { data: AppData; path: string; setPath: (path: string) => void }) {
@@ -71,7 +94,7 @@ function ObjectsPage({ data, path, setPath }: { data: AppData; path: string; set
   return <>
     <PageTitle title={object.name} subtitle={`${object.district} · ${object.channelCount} каналов`}><RiskBadge level={object.level} /></PageTitle>
     <section className="panel"><div className="panel-head"><div><h2>Линейная карта пикетов</h2><p>Относительная схема — не географическая карта</p></div>{alert && <Link className="button primary" to={`/alerts/${alert.id}`} setPath={setPath}>Открыть предупреждение</Link>}</div><PicketMap channels={object.channels} alert={alert} /></section>
-    <section className="panel"><div className="panel-head"><div><h2>Каналы объекта</h2><p>Значения, возраст и источник метаданных</p></div></div><ChannelTable channels={object.channels} /></section>
+    <section className="panel"><div className="panel-head"><div><h2>Каналы объекта</h2><p>Значения и возраст оборудования</p></div></div><ChannelTable channels={object.channels} /></section>
   </>;
 }
 
@@ -80,17 +103,17 @@ function ObjectCard({ object, setPath }: { object: RiskObject; setPath: (path: s
 }
 
 function ChannelTable({ channels }: { channels: RiskObject["channels"] }) {
-  return <div className="table-wrap"><table><thead><tr><th>Канал</th><th>Пикет</th><th>Значение</th><th>Возраст и ТО</th><th>Источник</th></tr></thead><tbody>{channels.map((channel) => <tr key={channel.id}><td><b>{channel.name}</b><small>{channel.sensorType}</small></td><td>{channel.picketRaw ?? "Без пикета"}</td><td><span className={`sensor-state ${channel.state}`}>{channel.value ?? "—"}</span></td><td>{channel.deviceAgeYears != null ? `${channel.deviceAgeYears.toFixed(1)} года` : "Нет данных"}<small>{channel.maintenanceNote}</small></td><td><span className="source-tag">{channel.ageSource === "generated_demo" ? "Demo-оценка" : channel.ageSource === "first_seen" ? "По первому событию" : "Импорт"}</span></td></tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr><th>Канал</th><th>Пикет</th><th>Значение</th><th>Возраст и ТО</th></tr></thead><tbody>{channels.map((channel) => <tr key={channel.id}><td><b>{channel.name}</b><small>{channel.sensorType}</small></td><td>{channel.picketRaw ?? "Без пикета"}</td><td><span className={`sensor-state ${channel.state}`}>{channel.value ?? "—"}</span></td><td>{channel.deviceAgeYears != null ? `${channel.deviceAgeYears.toFixed(1)} года` : "Нет данных"}<small>{channel.maintenanceNote}</small></td></tr>)}</tbody></table></div>;
 }
 
 function AlertsPage({ data, path, setPath, onRefresh, role }: { data: AppData; path: string; setPath: (path: string) => void; onRefresh: () => Promise<void>; role: UserRole }) {
   const id = path.split("/")[2];
   const alert = data.alerts.find((item) => item.id === id);
   if (!alert) return <><PageTitle title="Журнал предупреждений" subtitle="Прогнозы пожарного риска по объектам" /><section className="panel"><AlertTable alerts={data.alerts} setPath={setPath} /></section></>;
-  return <AlertDetails alert={alert} sms={data.sms.filter((item) => item.episodeId === alert.episodeId)} setPath={setPath} onRefresh={onRefresh} role={role} />;
+  return <AlertDetails alert={alert} sms={data.sms.filter((item) => item.episodeId === alert.episodeId)} requests={data.requests} setPath={setPath} onRefresh={onRefresh} role={role} />;
 }
 
-function AlertDetails({ alert, sms, setPath, onRefresh, role }: { alert: Alert; sms: AppData["sms"]; setPath: (path: string) => void; onRefresh: () => Promise<void>; role: UserRole }) {
+function AlertDetails({ alert, sms, requests, setPath, onRefresh, role }: { alert: Alert; sms: AppData["sms"]; requests: AppData["requests"]; setPath: (path: string) => void; onRefresh: () => Promise<void>; role: UserRole }) {
   const [message, setMessage] = useState("");
   const [decision, setDecision] = useState("maintenance");
   const [comment, setComment] = useState("");
@@ -103,21 +126,21 @@ function AlertDetails({ alert, sms, setPath, onRefresh, role }: { alert: Alert; 
     <PageTitle title={`${alertKindLabel(alert.kind)} · ${Math.round(alert.probability * 100)}%`} subtitle={`${alert.objectName} · Технический ID эпизода: ${alert.episodeId}`}><KindBadge alert={alert} /><RiskBadge level={alert.level} /></PageTitle>
     {alert.stale && <div className="notice warning">Показан последний успешный прогноз: ML-сервис временно недоступен.</div>}
     <div className="detail-grid">
-      <section className="panel hero-alert"><div className={`risk-score level-${alert.level}`}><strong>{Math.round(alert.probability * 100)}%</strong><span>{riskLabel(alert.level)}</span></div><div><dl className="facts"><div><dt>Рассчитано</dt><dd>{formatDate(alert.calculatedAt)}</dd></div><div><dt>Модель</dt><dd>{alert.modelVersion}</dd></div><div><dt>Опасный участок</dt><dd>{alert.picketFrom ? `ПК ${alert.picketFrom.toFixed(2)}–${alert.picketTo?.toFixed(2)}` : "Не определён"}</dd></div><div><dt>Адресаты</dt><dd>{alert.recipients.join(", ")}</dd></div></dl></div></section>
+      <section className="panel hero-alert"><div className={`risk-score level-${alert.level}`}><strong>{Math.round(alert.probability * 100)}%</strong><span>{riskLabel(alert.level)}</span></div><div><dl className="facts"><div><dt>Рассчитано</dt><dd>{formatDate(alert.calculatedAt)}</dd></div><div><dt>Опасный участок</dt><dd>{alert.picketFrom ? `ПК ${alert.picketFrom.toFixed(2)}–${alert.picketTo?.toFixed(2)}` : "Не определён"}</dd></div></dl></div></section>
       <section className="panel"><div className="panel-head"><div><h2>Динамика вероятности</h2><p>Накопленный риск по горизонтам</p></div></div><ProbabilityChart alert={alert} /></section>
     </div>
     <section className="panel"><div className="panel-head"><div><h2>Каналы и опасный диапазон</h2><p>Пикеты расположены в относительном масштабе</p></div></div><PicketMap channels={alert.channels} alert={alert} /></section>
     <div className="detail-grid thirds">
       <section className="panel"><h2>Факторы и объяснение</h2><div className="factor-list">{alert.factors.map((factor) => <div key={factor.label}><header><b>{factor.label}</b><strong>+{Math.round(factor.contribution * 100)}%</strong></header><p>{factor.detail}</p><i style={{ width: `${factor.contribution * 200}%` }} /></div>)}</div></section>
       <section className="panel"><h2>Рекомендация</h2><p className="recommendation">{alert.recommendation}</p>{(role === "district_dispatcher" || role === "ods_dispatcher") && <Link className="button primary" to={`/alerts/${alert.id}/request`} setPath={setPath}>Создать заявку</Link>}</section>
-      <section className="panel"><h2>Демонстрационный контекст</h2><span className="source-tag">Mock-источник</span><p>{alert.context}</p></section>
+      <section className="panel"><h2>Демонстрационный контекст</h2><p>{alert.context}</p></section>
     </div>
     <section className="panel"><div className="panel-head"><div><h2>Возраст и ТО</h2><p>Числовая оценка и источник показаны отдельно</p></div></div><ChannelTable channels={alert.channels} /></section>
     <div className="detail-grid">
       <section className="panel"><h2>Решение диспетчера</h2><label className="field">Результат проверки<select value={decision} onChange={(event) => setDecision(event.target.value)}><option value="confirmed_fire">Подтверждённый пожар</option><option value="smoke_without_fire">Задымление без пожара</option><option value="false_alarm">Ложное срабатывание</option><option value="sensor_malfunction">Техническая неисправность</option><option value="maintenance">Проверка / ТО</option><option value="unknown">Недостаточно данных</option></select></label><label className="field">Комментарий<textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Необязательно" /></label><button className="primary" onClick={act}>Сохранить решение</button>{message && <span className="success-message">✓ {message}</span>}</section>
       <section className="panel"><h2>История уровня</h2><div className="timeline">{alert.history.map((item, index) => <div key={index}><i className={`level-${item.toLevel}`} /><div><b>{item.fromLevel ? `${riskLabel(item.fromLevel)} → ` : "Создано: "}{riskLabel(item.toLevel)}</b><small>{formatDate(item.changedAt)}</small></div></div>)}</div></section>
     </div>
-    <section className="panel"><div className="panel-head"><div><h2>Статусы SMS</h2><p>Уведомления по созданным заявкам</p></div><Link to="/sms" setPath={setPath}>Весь журнал →</Link></div><SmsTable sms={sms} alerts={[alert]} setPath={setPath} /></section>
+    <section className="panel"><div className="panel-head"><div><h2>Статусы SMS</h2><p>Уведомления по созданным заявкам</p></div><Link to="/sms" setPath={setPath}>Весь журнал →</Link></div><SmsTable sms={sms} alerts={[alert]} requests={requests} setPath={setPath} /></section>
   </>;
 }
 
@@ -197,24 +220,24 @@ function RequestActionDialog({ request, employee, action, onClose, onRefresh }: 
   </section></div>;
 }
 
-function RequestTable({ requests, mode, employee, onRefresh }: { requests: AppData["requests"]; mode: RequestTableMode; employee?: Employee; onRefresh: () => Promise<void> }) {
+function RequestTable({ requests, alerts, mode, employee, onRefresh, setPath }: { requests: AppData["requests"]; alerts: AppData["alerts"]; mode: RequestTableMode; employee?: Employee; onRefresh: () => Promise<void>; setPath: (path: string) => void }) {
   const [dialog, setDialog] = useState<{ request: MaintenanceRequest; action: DialogAction }>();
   const ownAction = (request: MaintenanceRequest, action: ExecutorRequestAction) => setDialog({ request, action });
-  return <><div className="table-wrap"><table><thead><tr><th>ID / объект</th><th>Описание</th><th>Группа</th><th>Приоритет</th><th>Кто взял задачу</th><th>Статус / действия</th></tr></thead><tbody>{requests.map((request) => <tr key={request.id}><td><b>{request.publicId}</b><small>{request.objectName}</small></td><td>{request.description}<small>{request.picket ?? "Пикет не указан"}</small>{request.comment && <div className="request-original-comment"><b>Комментарий к заявке</b><p>{request.comment}</p></div>}{request.comments?.length > 0 && <details className="request-comments"><summary>Комментарии исполнителей ({request.comments.length})</summary>{request.comments.map((item) => <article key={item.id}><b>{item.employeeName}</b><time>{formatDate(item.createdAt)}</time><p>{item.text}</p></article>)}</details>}</td><td>{request.executorGroup === "technician" ? "Техники" : "ГБР"}</td><td>{request.priority === "emergency" ? "Экстренный" : request.priority === "high" ? "Высокий" : "Обычный"}</td><td>{request.assigneeName ?? <span className="muted">Не назначен</span>}</td><td>{mode === "dispatcher" ? <select value={request.status} onChange={async (event) => { await api.updateRequest(request.id, event.target.value as RequestStatus); await onRefresh(); }}>{Object.entries(requestStatusName).map(([value, name]) => <option value={value} key={value}>{name}</option>)}</select> : mode === "available" ? <button className="primary compact" aria-haspopup="dialog" onClick={() => employee && setDialog({ request, action: "claim" })}>Взять в работу</button> : mode === "mine" && request.status === "in_progress" ? <div className="request-actions"><button className="secondary compact" aria-haspopup="dialog" onClick={() => ownAction(request, "comment")}>Добавить комментарий</button><button className="icon-button release" aria-label="Снять с себя" title="Снять с себя" aria-haspopup="dialog" onClick={() => ownAction(request, "release")}>×</button><button className="success-button compact" aria-haspopup="dialog" onClick={() => ownAction(request, "complete")}>Выполнено</button><button className="danger-button compact" aria-haspopup="dialog" onClick={() => ownAction(request, "cancel")}>Отклонить</button></div> : requestStatusName[request.status]}</td></tr>)}</tbody></table></div>{dialog && employee && <RequestActionDialog request={dialog.request} employee={employee} action={dialog.action} onClose={() => setDialog(undefined)} onRefresh={onRefresh} />}</>;
+  return <><div className="table-wrap"><table><thead><tr><th>ID / объект</th><th>Описание</th><th>Группа</th><th>Приоритет</th><th>Уровень тревоги</th><th>Кто взял задачу</th><th>Статус / действия</th></tr></thead><tbody>{requests.map((request) => { const alert = alerts.find((item) => item.id === request.alertId); return <tr key={request.id}><td><b>{request.publicId}</b><small>{request.objectName}</small></td><td>{request.description}<small>{request.picket ?? "Пикет не указан"}</small>{request.comment && <div className="request-original-comment"><b>Комментарий к заявке</b><p>{request.comment}</p></div>}{request.comments?.length > 0 && <details className="request-comments"><summary>Комментарии исполнителей ({request.comments.length})</summary>{request.comments.map((item) => <article key={item.id}><b><PersonLink id={item.employeeId} name={item.employeeName} setPath={setPath} /></b><time>{formatDate(item.createdAt)}</time><p>{item.text}</p></article>)}</details>}</td><td>{request.executorGroup === "technician" ? "Техники" : "ГБР"}</td><td>{request.priority === "emergency" ? "Экстренный" : request.priority === "high" ? "Высокий" : "Обычный"}</td><td>{alert ? <RiskBadge level={alert.level} /> : <span className="muted">—</span>}</td><td>{request.assigneeName ? <PersonLink id={request.assigneeId} name={request.assigneeName} setPath={setPath} /> : <span className="muted">Не назначен</span>}</td><td>{mode === "dispatcher" ? <select value={request.status} onChange={async (event) => { await api.updateRequest(request.id, event.target.value as RequestStatus); await onRefresh(); }}>{Object.entries(requestStatusName).map(([value, name]) => <option value={value} key={value}>{name}</option>)}</select> : mode === "available" ? <button className="primary compact" aria-haspopup="dialog" onClick={() => employee && setDialog({ request, action: "claim" })}>Взять в работу</button> : mode === "mine" && request.status === "in_progress" ? <div className="request-actions"><button className="secondary compact" aria-haspopup="dialog" onClick={() => ownAction(request, "comment")}>Добавить комментарий</button><button className="icon-button release" aria-label="Снять с себя" title="Снять с себя" aria-haspopup="dialog" onClick={() => ownAction(request, "release")}>×</button><button className="success-button compact" aria-haspopup="dialog" onClick={() => ownAction(request, "complete")}>Выполнено</button><button className="danger-button compact" aria-haspopup="dialog" onClick={() => ownAction(request, "cancel")}>Отклонить</button></div> : requestStatusName[request.status]}</td></tr>; })}</tbody></table></div>{dialog && employee && <RequestActionDialog request={dialog.request} employee={employee} action={dialog.action} onClose={() => setDialog(undefined)} onRefresh={onRefresh} />}</>;
 }
 
 function RequestsPage({ data, role, employee, onRefresh, setPath }: { data: AppData; role: UserRole; employee?: Employee; onRefresh: () => Promise<void>; setPath: (path: string) => void }) {
   const dispatcher = role === "district_dispatcher" || role === "ods_dispatcher";
-  if (dispatcher) return <><PageTitle title="Заявки" subtitle="Контроль исполнения и технического обслуживания"><Link className="button primary" to="/requests/new" setPath={setPath}>Создать заявку</Link></PageTitle><section className="panel"><RequestTable requests={data.requests} mode="dispatcher" employee={employee} onRefresh={onRefresh} />{!data.requests.length && <Empty>Заявок пока нет.</Empty>}</section></>;
+  if (dispatcher) return <><PageTitle title="Заявки" subtitle="Контроль исполнения и технического обслуживания"><Link className="button primary" to="/requests/new" setPath={setPath}>Создать заявку</Link></PageTitle><section className="panel"><RequestTable requests={data.requests} alerts={data.alerts} mode="dispatcher" employee={employee} onRefresh={onRefresh} setPath={setPath} />{!data.requests.length && <Empty>Заявок пока нет.</Empty>}</section></>;
   const group = role as ExecutorGroup;
   const relevant = data.requests.filter((request) => request.executorGroup === group);
   const mine = relevant.filter((request) => request.assigneeId === employee?.id);
   const available = relevant.filter((request) => !request.assigneeId && !["completed", "rejected"].includes(request.status));
   const busy = relevant.filter((request) => request.assigneeId && request.assigneeId !== employee?.id);
   return <><PageTitle title={role === "technician" ? "Рабочее место техника" : "Рабочее место ГБР"} subtitle={employee?.name ?? "Выберите сотрудника"} />
-    <section className="panel"><div className="panel-head"><div><h2>Доступные заявки</h2><p>Первый исполнитель, взявший заявку, становится ответственным</p></div></div><RequestTable requests={available} mode="available" employee={employee} onRefresh={onRefresh} />{!available.length && <Empty>Свободных заявок нет.</Empty>}</section>
-    <section className="panel"><div className="panel-head"><div><h2>Мои заявки</h2><p>Закреплены за выбранным сотрудником</p></div></div><RequestTable requests={mine} mode="mine" employee={employee} onRefresh={onRefresh} />{!mine.length && <Empty>У сотрудника пока нет заявок.</Empty>}</section>
-    <section className="panel"><div className="panel-head"><div><h2>Занятые заявки группы</h2><p>Уже закреплены за коллегами</p></div></div><RequestTable requests={busy} mode="busy" employee={employee} onRefresh={onRefresh} />{!busy.length && <Empty>Занятых коллегами заявок нет.</Empty>}</section></>;
+    <section className="panel"><div className="panel-head"><div><h2>Доступные заявки</h2><p>Первый исполнитель, взявший заявку, становится ответственным</p></div></div><RequestTable requests={available} alerts={data.alerts} mode="available" employee={employee} onRefresh={onRefresh} setPath={setPath} />{!available.length && <Empty>Свободных заявок нет.</Empty>}</section>
+    <section className="panel"><div className="panel-head"><div><h2>Мои заявки</h2><p>Закреплены за выбранным сотрудником</p></div></div><RequestTable requests={mine} alerts={data.alerts} mode="mine" employee={employee} onRefresh={onRefresh} setPath={setPath} />{!mine.length && <Empty>У сотрудника пока нет заявок.</Empty>}</section>
+    <section className="panel"><div className="panel-head"><div><h2>Занятые заявки группы</h2><p>Уже закреплены за коллегами</p></div></div><RequestTable requests={busy} alerts={data.alerts} mode="busy" employee={employee} onRefresh={onRefresh} setPath={setPath} />{!busy.length && <Empty>Занятых коллегами заявок нет.</Empty>}</section></>;
 }
 
 function ProfilePage({ role, employee, objects }: { role: UserRole; employee?: Employee; objects: RiskObject[] }) {
@@ -223,15 +246,24 @@ function ProfilePage({ role, employee, objects }: { role: UserRole; employee?: E
   return <><PageTitle title="Профиль сотрудника" subtitle={roleName} /><div className="profile-grid"><section className="panel profile-card"><div className="profile-avatar">{profile.name.split(" ").slice(0, 2).map((part) => part[0]).join("")}</div><h2>{profile.name}</h2><p>{roleName}</p></section><section className="panel"><h2>Районы ответственности</h2><div className="profile-tags">{profile.districts.map((district) => <span key={district}>{district}</span>)}</div></section><section className="panel profile-objects"><h2>Объекты</h2>{profile.objects.map((object) => <article key={object.id}><b>{object.name}</b><small>{object.district}</small></article>)}</section></div></>;
 }
 
+function EmployeeProfilePage({ id, objects, availableEmployees }: { id: string; objects: RiskObject[]; availableEmployees: Employee[] }) {
+  const employee = availableEmployees.find((item) => item.id === id);
+  if (!employee) return <><PageTitle title="Сотрудник не найден" subtitle="Профиль отсутствует" /><Empty>Проверьте ссылку на сотрудника.</Empty></>;
+  const roleName = employee.group === "technician" ? "Техник" : "Группа быстрого реагирования";
+  const assignedObjects = objects.filter((object) => employee.objectIds.includes(object.id));
+  return <><PageTitle title="Профиль сотрудника" subtitle={roleName} /><div className="profile-grid"><section className="panel profile-card"><div className="profile-avatar">{employee.name.split(" ").slice(0, 2).map((part) => part[0]).join("")}</div><h2>{employee.name}</h2><p>{roleName}</p></section><section className="panel"><h2>Районы ответственности</h2><div className="profile-tags">{employee.districts.map((district) => <span key={district}>{district}</span>)}</div></section><section className="panel profile-objects"><h2>Объекты</h2>{assignedObjects.map((object) => <article key={object.id}><b>{object.name}</b><small>{object.district}</small></article>)}</section></div></>;
+}
+
 function AnalyticsPage({ data }: { data: AppData }) {
   const primary = data.alerts[0];
   return <><PageTitle title="Аналитика" subtitle="Качество proxy-модели и динамика прогнозов" /><div className="notice info"><b>Важно:</b> показатели рассчитаны на временной proxy-разметке MVP и не являются подтверждённым качеством прогнозирования реальных пожаров.</div><div className="kpi-grid"><article className="kpi info"><span>ROC AUC</span><strong>{data.metrics.rocAuc.toFixed(2)}</strong><small>{data.metrics.modelVersion}</small></article><article className="kpi success"><span>Precision</span><strong>{Math.round(data.metrics.precision * 100)}%</strong><small>proxy-разметка</small></article><article className="kpi warning"><span>Recall</span><strong>{Math.round(data.metrics.recall * 100)}%</strong><small>proxy-разметка</small></article><article className="kpi"><span>Тревог / объект / сутки</span><strong>{data.metrics.alertsPerDay.toFixed(1)}</strong><small>демонстрационная выборка</small></article></div><div className="dashboard-grid"><section className="panel wide"><div className="panel-head"><div><h2>Динамика вероятностей</h2><p>{primary?.objectName}</p></div></div>{primary && <ProbabilityChart alert={primary} />}</section><section className="panel"><h2>Источник оценки</h2><p className="metric-source">{data.metrics.labelSource}</p><dl className="facts"><div><dt>Версия модели</dt><dd>{data.metrics.modelVersion}</dd></div><div><dt>Назначение</dt><dd>Демонстрация MVP</dd></div><div><dt>Ограничение</dt><dd>Нет журнала подтверждённых пожаров</dd></div></dl></section></div></>;
 }
 
-function SmsTable({ sms, alerts, setPath }: { sms: AppData["sms"]; alerts: AppData["alerts"]; setPath: (path: string) => void }) {
+function SmsTable({ sms, alerts, requests, setPath }: { sms: AppData["sms"]; alerts: AppData["alerts"]; requests: AppData["requests"]; setPath: (path: string) => void }) {
   const incidentsWithAssignee = new Set<string>();
   return <div className="table-wrap sms-table"><table><thead><tr><th>Время</th><th>Объект и тип</th><th>Уровень происшествия</th><th>Получатель</th><th>Причина</th><th>Ответственный</th><th>Доставка</th><th>Обработка</th></tr></thead><tbody>{sms.map((item) => {
     const alert = alerts.find((candidate) => candidate.episodeId === item.episodeId);
+    const request = requests.find((candidate) => candidate.id === item.requestId);
     const incidentKey = item.episodeId;
     const showAssignee = Boolean(item.assigneeName) && !incidentsWithAssignee.has(incidentKey);
     if (showAssignee) incidentsWithAssignee.add(incidentKey);
@@ -239,9 +271,9 @@ function SmsTable({ sms, alerts, setPath }: { sms: AppData["sms"]; alerts: AppDa
       <td>{formatDate(item.sentAt)}</td>
       <td><Link to={`/sms/${item.id}`} setPath={setPath}><b>{alert?.objectName ?? item.episodeTitle}</b><small>{alert ? alertKindLabel(alert.kind) : "Событие"}</small></Link></td>
       <td><span className={`risk-badge level-${item.alertLevel}`}><i />{riskLabel(item.alertLevel)}</span></td>
-      <td><b>{item.recipientName}</b></td>
+      <td><b><PersonLink id={item.recipientId} name={item.recipientName} setPath={setPath} /></b></td>
       <td>{item.incidentSummary}</td>
-      <td>{showAssignee ? item.assigneeName : <span className="muted">—</span>}</td>
+      <td>{showAssignee && item.assigneeName ? <PersonLink id={request?.assigneeId} name={item.assigneeName} setPath={setPath} /> : <span className="muted">—</span>}</td>
       <td><span className={`delivery ${item.status}`}>{smsDeliveryStatusName[item.status]}</span></td>
       <td><span className={`processing ${item.processingStatus}`}>{smsProcessingStatusName[item.processingStatus]}</span></td>
     </tr>;
@@ -249,7 +281,7 @@ function SmsTable({ sms, alerts, setPath }: { sms: AppData["sms"]; alerts: AppDa
 }
 
 function SmsPage({ data, setPath }: { data: AppData; setPath: (path: string) => void }) {
-  return <><PageTitle title="Журнал SMS" subtitle="" /><section className="panel"><SmsTable sms={data.sms} alerts={data.alerts} setPath={setPath} /></section></>;
+  return <><PageTitle title="Журнал SMS" subtitle="" /><section className="panel"><SmsTable sms={data.sms} alerts={data.alerts} requests={data.requests} setPath={setPath} /></section></>;
 }
 
 function SmsDetailsPage({ data, id, setPath }: { data: AppData; id: string; setPath: (path: string) => void }) {
@@ -265,7 +297,7 @@ function SmsDetailsPage({ data, id, setPath }: { data: AppData; id: string; setP
     <section className="panel mail-window">
       <div className="mail-toolbar"><span>SMS-уведомление</span><span className={`delivery ${sms.status}`}>{smsDeliveryStatusName[sms.status]}</span></div>
       <h1>{subject}</h1>
-      <div className="mail-meta"><div className="mail-avatar">МК</div><dl><div><dt>От:</dt><dd>Система мониторинга рисков АО «Москоллектор»</dd></div><div><dt>Кому:</dt><dd>{sms.recipientName}</dd></div><div><dt>Дата:</dt><dd>{formatDate(sms.sentAt)}</dd></div><div><dt>Тема:</dt><dd>{subject}</dd></div></dl></div>
+      <div className="mail-meta"><div className="mail-avatar">МК</div><dl><div><dt>От:</dt><dd>Система мониторинга рисков АО «Москоллектор»</dd></div><div><dt>Кому:</dt><dd><PersonLink id={sms.recipientId} name={sms.recipientName} setPath={setPath} /></dd></div><div><dt>Дата:</dt><dd>{formatDate(sms.sentAt)}</dd></div><div><dt>Тема:</dt><dd>{subject}</dd></div></dl></div>
       <div className="mail-body">
         <p>Автоматическое уведомление о событии на объекте инженерной инфраструктуры.</p>
         <div className="mail-summary"><div><span>Объект</span><b>{objectName}</b></div><div><span>Местоположение</span><b>{location}</b></div><div><span>Состояние</span><b>{riskLabel(sms.alertLevel)}</b></div><div><span>Обработка</span><b>{smsProcessingStatusName[sms.processingStatus]}</b></div></div>
@@ -310,6 +342,7 @@ export function App({ initialData, initialPath, initialRole }: { initialData?: A
   let page: React.ReactNode;
   const visibleObjects = visibleObjectsFor(userRole, selectedEmployee, data.objects);
   const visibleObjectIds = new Set(visibleObjects.map((object) => object.id));
+  const visibleEmployees = employees.filter((employee) => employee.objectIds.some((objectId) => visibleObjectIds.has(objectId)));
   const scopedData = { ...data, objects: visibleObjects, alerts: data.alerts.filter((alert) => visibleObjectIds.has(alert.objectId)), requests: data.requests.filter((request) => visibleObjectIds.has(request.objectId)), sms: data.sms.filter((item) => data.alerts.some((alert) => alert.episodeId === item.episodeId && visibleObjectIds.has(alert.objectId))) };
   const requestMatch = effectivePath.match(/^\/alerts\/([^/]+)\/request$/);
   if (requestMatch && (userRole === "district_dispatcher" || userRole === "ods_dispatcher")) {
@@ -320,11 +353,12 @@ export function App({ initialData, initialPath, initialRole }: { initialData?: A
   else if (effectivePath.startsWith("/objects")) page = <ObjectsPage data={scopedData} path={effectivePath} setPath={setPath} />;
   else if (effectivePath.startsWith("/alerts")) page = <AlertsPage data={scopedData} path={effectivePath} setPath={setPath} onRefresh={refresh} role={userRole} />;
   else if (effectivePath === "/requests") page = <RequestsPage data={scopedData} role={userRole} employee={selectedEmployee} onRefresh={refresh} setPath={setPath} />;
+  else if (effectivePath.startsWith("/profile/")) page = <EmployeeProfilePage id={effectivePath.split("/")[2]} objects={scopedData.objects} availableEmployees={visibleEmployees} />;
   else if (effectivePath === "/profile") page = <ProfilePage role={userRole} employee={selectedEmployee} objects={data.objects} />;
   else if (effectivePath === "/analytics") page = <AnalyticsPage data={scopedData} />;
   else if (effectivePath.startsWith("/sms/")) page = <SmsDetailsPage data={scopedData} id={effectivePath.split("/")[2]} setPath={setPath} />;
   else if (effectivePath === "/sms") page = <SmsPage data={scopedData} setPath={setPath} />;
-  else page = <Dashboard data={scopedData} setPath={setPath} />;
+  else page = <Dashboard data={scopedData} role={userRole} setPath={setPath} />;
   const currentProfile = profileFor(userRole, selectedEmployee, data.objects);
-  return <div className="app-shell"><aside className="sidebar"><div className="brand"><span>МК</span><div><b>Москоллектор</b><small>Контроль инфраструктуры</small></div></div><nav>{visibleNav.map(([href, label, icon]) => <Link key={href} to={href} setPath={setPath} className={activeRoot === href ? "active" : ""}><span>{icon}</span>{label}</Link>)}</nav></aside><main><div className="topbar"><div><span className="pulse" />Данные обновлены 2 мин назад</div><div className="top-user">{data.demo && <span className="demo-badge">DEMO</span>}<label className="role-switch">Роль<select aria-label="Текущая роль" value={userRole} onChange={(event) => changeRole(event.target.value as UserRole)}>{roles.map((item) => <option value={item.value} key={item.value}>{item.name}</option>)}</select></label>{roleEmployees.length > 0 && <label className="role-switch">Сотрудник<select aria-label="Текущий сотрудник" value={selectedEmployee?.id} onChange={(event) => setEmployeeId(event.target.value)}>{roleEmployees.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<Link to="/profile" setPath={setPath} className="profile-link"><span className="avatar">{role.initials}</span><b>{currentProfile.name}</b></Link></div></div><div className="content">{page}</div></main></div>;
+  return <div className="app-shell"><aside className="sidebar"><div className="brand"><span>МК</span><div><b>Москоллектор</b><small>Контроль инфраструктуры</small></div></div><nav>{visibleNav.map(([href, label, icon]) => <Link key={href} to={href} setPath={setPath} className={activeRoot === href ? "active" : ""}><span>{icon}</span>{label}</Link>)}</nav></aside><main><div className="topbar"><div><span className="pulse" />Данные обновлены 2 мин назад</div><div className="top-user"><label className="role-switch">Роль<select aria-label="Текущая роль" value={userRole} onChange={(event) => changeRole(event.target.value as UserRole)}>{roles.map((item) => <option value={item.value} key={item.value}>{item.name}</option>)}</select></label>{roleEmployees.length > 0 && <label className="role-switch">Сотрудник<select aria-label="Текущий сотрудник" value={selectedEmployee?.id} onChange={(event) => setEmployeeId(event.target.value)}>{roleEmployees.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<Link to="/profile" setPath={setPath} className="profile-link"><span className="avatar">{role.initials}</span><b>{currentProfile.name}</b></Link></div></div><div className="content">{page}</div></main></div>;
 }

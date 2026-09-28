@@ -36,6 +36,22 @@ test("шапка позволяет выбрать одну из четырёх 
   expect(html).toContain("Группа реагирования");
 });
 
+test("верхняя шапка не показывает демонстрационную плашку", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/" />);
+
+  expect(html).not.toContain(">DEMO<");
+});
+
+test("таблица каналов не показывает источник метаданных", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/objects/demo-object-1" />);
+
+  expect(html).toContain("Значения и возраст оборудования");
+  expect(html).not.toContain("источник метаданных");
+  expect(html).not.toContain("<th>Источник</th>");
+  expect(html).not.toContain("Demo-оценка");
+  expect(html).not.toContain("По первому событию");
+});
+
 test("журнал SMS показывает объект и тип события и ведёт на отдельное сообщение", () => {
   const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/sms" />);
 
@@ -254,4 +270,103 @@ test("BLACK в демонстрационном журнале уведомля�
   expect(html).toContain("Алексей Дмитриевич Соколов");
   expect(html).toContain("Наталья Викторовна Орлова");
   expect(html).toContain("Сергей Павлович Волков");
+});
+
+test("панель диспетчера предлагает четыре горизонта и все уровни тревоги", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/" initialRole="district_dispatcher" />);
+
+  expect(html).toContain('aria-label="Горизонт прогноза"');
+  expect(html).toContain('value="now"');
+  expect(html).toContain('value="6h"');
+  expect(html).toContain('value="12h"');
+  expect(html).toContain('value="24h"');
+  expect(html).toContain('aria-label="Уровень тревоги"');
+  expect(html).toContain("Чёрный");
+  expect(html).toContain("Красный");
+  expect(html).toContain("Жёлтый");
+  expect(html).toContain("Зелёный");
+});
+
+test("фильтр района доступен ОДС и скрыт у районного диспетчера", () => {
+  const district = renderToStaticMarkup(<App initialData={demoData} initialPath="/" initialRole="district_dispatcher" />);
+  const ods = renderToStaticMarkup(<App initialData={demoData} initialPath="/" initialRole="ods_dispatcher" />);
+
+  expect(district).not.toContain('aria-label="Район"');
+  expect(ods).toContain('aria-label="Район"');
+  expect(ods).toContain("Все районы");
+  expect(ods).toContain("САО");
+  expect(ods).toContain("ЮАО");
+});
+
+test("таблица заявок показывает уровень тревоги связанного предупреждения", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/requests" initialRole="ods_dispatcher" />);
+
+  expect(html).toContain("Уровень тревоги");
+  expect(html).toContain("Чёрный · Событие сейчас");
+});
+
+test("карточка предупреждения скрывает служебные адресаты, модель и mock-плашку", () => {
+  const alert = demoData.alerts[0];
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath={`/alerts/${alert.id}`} initialRole="district_dispatcher" />);
+
+  expect(html).not.toContain("<dt>Адресаты</dt>");
+  expect(html).not.toContain("<dt>Модель</dt>");
+  expect(html).not.toContain(alert.modelVersion);
+  expect(html).not.toContain("Mock-источник");
+  expect(html).toContain(alert.context);
+});
+
+test("ФИО в заявках ведут в карточку сотрудника", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/requests" initialRole="ods_dispatcher" />);
+
+  expect(html).toContain('href="/profile/tech-ivanov"');
+  expect(html).toContain("Илья Сергеевич Иванов");
+});
+
+test("получатели и ответственные в SMS ведут в карточки сотрудников", () => {
+  const journal = renderToStaticMarkup(<App initialData={demoData} initialPath="/sms" initialRole="ods_dispatcher" />);
+  const message = renderToStaticMarkup(<App initialData={demoData} initialPath="/sms/SMS-2201" initialRole="ods_dispatcher" />);
+
+  expect(journal).toContain('href="/profile/tech-ivanov"');
+  expect(journal).toContain('href="/profile/response-orlova"');
+  expect(message).toContain('href="/profile/tech-ivanov"');
+});
+
+test("карточка сотрудника показывает ФИО, роль, районы и объекты", () => {
+  const technician = renderToStaticMarkup(<App initialData={demoData} initialPath="/profile/tech-ivanov" initialRole="ods_dispatcher" />);
+  const response = renderToStaticMarkup(<App initialData={demoData} initialPath="/profile/response-orlova" initialRole="ods_dispatcher" />);
+
+  expect(technician).toContain("Илья Сергеевич Иванов");
+  expect(technician).toContain("Техник");
+  expect(technician).toContain("САО");
+  expect(technician).toContain("Коллектор №1 · участок Северный");
+  expect(response).toContain("Наталья Викторовна Орлова");
+  expect(response).toContain("Группа быстрого реагирования");
+  expect(response).toContain("ЮАО");
+});
+
+test("неизвестный идентификатор сотрудника не подменяется совпавшим ФИО", () => {
+  const data = structuredClone(demoData);
+  data.requests[1].assigneeId = "retired-employee";
+  data.requests[1].assigneeName = "Илья Сергеевич Иванов";
+  data.requests[1].comments = [];
+  const html = renderToStaticMarkup(<App initialData={data} initialPath="/requests" initialRole="ods_dispatcher" />);
+
+  expect(html).toContain("Илья Сергеевич Иванов");
+  expect(html).not.toContain('href="/profile/tech-ivanov"');
+});
+
+test("ответственный в SMS связывается с профилем по заявке, а не по ФИО", () => {
+  const data = structuredClone(demoData);
+  data.sms[0].assigneeName = "Отображаемое имя ответственного";
+  const html = renderToStaticMarkup(<App initialData={data} initialPath="/sms" initialRole="ods_dispatcher" />);
+
+  expect(html).toContain('<a href="/profile/tech-ivanov" class="person-link">Отображаемое имя ответственного</a>');
+});
+
+test("исполнитель не открывает профиль сотрудника вне доступных объектов", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/profile/response-orlova" initialRole="technician" />);
+
+  expect(html).toContain("Сотрудник не найден");
+  expect(html).not.toContain("Наталья Викторовна Орлова");
 });

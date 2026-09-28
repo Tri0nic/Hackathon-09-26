@@ -8,6 +8,8 @@ button.primary:hover, .button.primary:hover { background: #5544c5; }
 button.secondary { background: #fff; border: 1px solid var(--border); color: #242837; }
 select, textarea { border: 1px solid #cfd4df; border-radius: 4px; background: #fff; color: #242837; padding: 8px 10px; }
 a { color: #5645c1; text-decoration: none; }
+.person-link { color: #5645c1; font-weight: 500; text-decoration: underline; text-decoration-color: #c9c1ef; text-underline-offset: 2px; }
+.person-link:hover { color: #4433aa; text-decoration-color: currentColor; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: 5px; font-size: 26px; letter-spacing: -.3px; }
 h2 { margin-bottom: 4px; font-size: 17px; }
