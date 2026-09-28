@@ -179,7 +179,7 @@ def _event_contexts(events_path: Path, rows: list[dict[str, Any]]) -> dict[tuple
         contexts[_context_key(row["object_id"], timestamp)] = {
             "objectName": str(first.get("object_name") if first else f"Объект {row['object_id']}"),
             "district": _district(str(row["object_id"])),
-            "dangerousSection": f"ПК {first['picket_raw']}" if first and first.get("picket_raw") else "Не определён",
+            "dangerousSection": str(first["picket_raw"]) if first and first.get("picket_raw") else "Не определён",
             "sensors": sensors,
         }
     return contexts

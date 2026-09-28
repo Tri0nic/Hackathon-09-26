@@ -873,7 +873,7 @@
       "objectId": "3360",
       "objectName": "ДУ объект Омикрон",
       "district": "ЦАО",
-      "dangerousSection": "ПК ПК28",
+      "dangerousSection": "ПК28",
       "sensors": [
         {
           "id": "104028",
@@ -2329,7 +2329,7 @@
       "objectId": "4370",
       "objectName": "объект Ро",
       "district": "ЮАО",
-      "dangerousSection": "ПК ПК172",
+      "dangerousSection": "ПК172",
       "sensors": [
         {
           "id": "143537",
@@ -2506,7 +2506,7 @@
       "objectId": "5343",
       "objectName": "объект Кси ПК202-ПК302",
       "district": "ВАО",
-      "dangerousSection": "ПК ПК275+9",
+      "dangerousSection": "ПК275+9",
       "sensors": [
         {
           "id": "228571",
@@ -2683,7 +2683,7 @@
       "objectId": "5578",
       "objectName": "объект Дзета ДУ",
       "district": "САО",
-      "dangerousSection": "ПК ПК0",
+      "dangerousSection": "ПК0",
       "sensors": [
         {
           "id": "268298",
@@ -2900,7 +2900,7 @@
       "objectId": "5657",
       "objectName": "объект Каппа ДУ",
       "district": "ЮАО",
-      "dangerousSection": "ПК ПК521",
+      "dangerousSection": "ПК521",
       "sensors": [
         {
           "id": "267333",
@@ -3117,7 +3117,7 @@
       "objectId": "5675",
       "objectName": "объект Мю ДУ",
       "district": "ВАО",
-      "dangerousSection": "ПК ПК5",
+      "dangerousSection": "ПК5",
       "sensors": [
         {
           "id": "288146",
@@ -3334,7 +3334,7 @@
       "objectId": "3360",
       "objectName": "ДУ объект Омикрон",
       "district": "ЦАО",
-      "dangerousSection": "ПК ПК28",
+      "dangerousSection": "ПК28",
       "sensors": [
         {
           "id": "104028",
@@ -3752,7 +3752,7 @@
       "objectId": "5343",
       "objectName": "объект Кси ПК202-ПК302",
       "district": "ВАО",
-      "dangerousSection": "ПК ПК275+9",
+      "dangerousSection": "ПК275+9",
       "sensors": [
         {
           "id": "228571",
@@ -3929,7 +3929,7 @@
       "objectId": "5578",
       "objectName": "объект Дзета ДУ",
       "district": "САО",
-      "dangerousSection": "ПК ПК0",
+      "dangerousSection": "ПК0",
       "sensors": [
         {
           "id": "268298",
@@ -4146,7 +4146,7 @@
       "objectId": "5657",
       "objectName": "объект Каппа ДУ",
       "district": "ЮАО",
-      "dangerousSection": "ПК ПК544",
+      "dangerousSection": "ПК544",
       "sensors": [
         {
           "id": "267353",
@@ -4363,7 +4363,7 @@
       "objectId": "5675",
       "objectName": "объект Мю ДУ",
       "district": "ВАО",
-      "dangerousSection": "ПК ПК5",
+      "dangerousSection": "ПК5",
       "sensors": [
         {
           "id": "288146",

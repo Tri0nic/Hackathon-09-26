@@ -132,7 +132,7 @@ function AlertDetails({ alert, sms, requests, setPath, onRefresh, role }: { aler
     </div>
     <section className="panel"><div className="panel-head"><div><h2>Каналы и опасный диапазон</h2><p>Пикеты расположены в относительном масштабе</p></div></div><PicketMap channels={alert.channels} alert={alert} /></section>
     <div className="detail-grid thirds">
-      <section className="panel"><h2>Факторы и объяснение</h2><div className="factor-list">{alert.factors.map((factor) => <div key={factor.label}><header><b>{factor.label}</b><strong>+{Math.round(factor.contribution * 100)}%</strong></header><p>{factor.detail}</p><i style={{ width: `${factor.contribution * 200}%` }} /></div>)}</div></section>
+      <section className="panel"><h2>Факторы и объяснение</h2><div className="factor-list">{alert.factors.map((factor, index) => <div key={`${factor.label}-${index}`}><header><b>{factor.label}</b><strong>{factor.contribution >= 0 ? "+" : "−"}{Math.round(Math.abs(factor.contribution) * 100)}%</strong></header><p>{factor.detail}</p><i style={{ width: `${Math.min(100, Math.abs(factor.contribution) * 100)}%` }} /></div>)}</div></section>
       <section className="panel"><h2>Рекомендация</h2><p className="recommendation">{alert.recommendation}</p>{(role === "district_dispatcher" || role === "ods_dispatcher") && <Link className="button primary" to={`/alerts/${alert.id}/request`} setPath={setPath}>Создать заявку</Link>}</section>
       <section className="panel"><h2>Демонстрационный контекст</h2><p>{alert.context}</p></section>
     </div>
@@ -354,7 +354,7 @@ export function App({ initialData, initialPath, initialRole }: { initialData?: A
   else if (effectivePath.startsWith("/objects")) page = <ObjectsPage data={scopedData} path={effectivePath} setPath={setPath} />;
   else if (effectivePath.startsWith("/alerts")) page = <AlertsPage data={scopedData} path={effectivePath} setPath={setPath} onRefresh={refresh} role={userRole} />;
   else if (effectivePath === "/requests") page = <RequestsPage data={scopedData} role={userRole} employee={selectedEmployee} onRefresh={refresh} setPath={setPath} />;
-  else if (effectivePath === "/model-demo") page = <ModelDemoPage setPath={setPath} onRefresh={refresh} />;
+  else if (effectivePath === "/model-demo") page = <ModelDemoPage navigate={(next) => go(next, setPath)} onRefresh={refresh} role={userRole} />;
   else if (effectivePath.startsWith("/profile/")) page = <EmployeeProfilePage id={effectivePath.split("/")[2]} objects={scopedData.objects} availableEmployees={visibleEmployees} />;
   else if (effectivePath === "/profile") page = <ProfilePage role={userRole} employee={selectedEmployee} objects={data.objects} />;
   else if (effectivePath === "/analytics") page = <AnalyticsPage data={scopedData} />;

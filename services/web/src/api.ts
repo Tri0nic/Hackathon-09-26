@@ -1,5 +1,6 @@
 import { demoData } from "./demo";
 import { alertKindLabel, createPublicRequestId, smsRecipientsForAlert, smsRoleLabel } from "./domain";
+import { modelFactorLabel } from "./modelDemo";
 import type { Alert, AppData, Channel, CreateRequestInput, Decision, Employee, ExecutorGroup, ExecutorRequestAction, MaintenanceRequest, ModelDemoCalculation, ModelDemoFactor, ModelDemoScenario, ModelMetrics, RequestComment, RequestKind, RequestPriority, RequestStatus, RiskLevel, RiskObject, SmsDeliveryStatus, SmsNotification, SmsProcessingStatus } from "./types";
 
 const baseUrl = import.meta.env.VITE_API_URL ?? "";
@@ -28,13 +29,22 @@ const requestKinds: RequestKind[] = ["inspection", "repair", "emergency"];
 export function normalizeApiData(payload: RawApiPayload): AppData {
   const alertRows = payload.alerts.map((row): Alert => {
     const alertLevel = level(row.level);
+    const factors = list<Record<string, unknown>>(row.factors).map((factor) => {
+      const feature = text(factor.feature);
+      const horizon = text(factor.horizon);
+      const horizonLabel = ({ now: "сейчас", "6h": "6 часов", "12h": "12 часов", "24h": "24 часа" } as Record<string, string>)[horizon] ?? horizon;
+      return {
+        label: text(factor.label, modelFactorLabel(feature)), contribution: numeric(factor.contribution),
+        detail: text(factor.detail, horizonLabel ? `Вклад в прогноз на горизонте «${horizonLabel}»` : "Вклад в итоговый прогноз")
+      };
+    });
     return {
       id: text(row.id), episodeId: text(row.episodeId), objectId: text(row.objectId), objectName: text(row.objectName, "Объект не указан"),
       kind: "fire", level: alertLevel, horizon: text(row.horizon, "24h"), probability: numeric(row.probability),
       pNow: numeric(row.pNow), p6h: numeric(row.p6h), p12h: numeric(row.p12h), p24h: numeric(row.p24h, numeric(row.probability)),
       calculatedAt: text(row.calculatedAt, new Date(0).toISOString()), modelVersion: text(row.modelVersion, "не указана"), stale: row.stale === true, current: row.current !== false, isDemo: row.isDemo === true,
       picketFrom: typeof row.picketFrom === "number" ? row.picketFrom : undefined, picketTo: typeof row.picketTo === "number" ? row.picketTo : undefined,
-      channels: list<Channel>(row.channels), factors: list<Alert["factors"][number]>(row.factors), recommendation: text(row.recommendation, "Провести проверку объекта."),
+      channels: list<Channel>(row.channels), factors, recommendation: text(row.recommendation, "Провести проверку объекта."),
       context: text(row.context, "Данные не предоставлены."), recipients: list<string>(row.recipients).length ? list<string>(row.recipients) : recipients(alertLevel),
       history: list<Alert["history"][number]>(row.history), decisions: list<Decision>(row.decisions)
     };

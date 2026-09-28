@@ -4,11 +4,12 @@ import { PageTitle } from "./components";
 import { formatDate } from "./domain";
 import { canPublishModelDemo, initialModelDemoState, modelDemoReducer, modelFactorLabel } from "./modelDemo";
 import type { ModelDemoState } from "./modelDemo";
+import type { UserRole } from "./types";
 
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : "Не удалось выполнить операцию";
 
-export function ModelDemoPage({ setPath, onRefresh, initialState }: { setPath: (path: string) => void; onRefresh: () => Promise<void>; initialState?: ModelDemoState }) {
+export function ModelDemoPage({ navigate, onRefresh, role, initialState }: { navigate: (path: string) => void; onRefresh: () => Promise<void>; role: UserRole; initialState?: ModelDemoState }) {
   const [state, dispatch] = useReducer(modelDemoReducer, initialState ?? initialModelDemoState);
   const scenario = state.scenarios[state.index];
 
@@ -57,7 +58,7 @@ export function ModelDemoPage({ setPath, onRefresh, initialState }: { setPath: (
         <div className="panel-head"><div><h2>Результат прогноза</h2><p>Рассчитано {formatDate(state.calculation.prediction.calculatedAt)}</p></div></div>
         <div className="model-demo-probabilities">{[["Сейчас", state.calculation.prediction.pNow], ["6 часов", state.calculation.prediction.p6h], ["12 часов", state.calculation.prediction.p12h], ["24 часа", state.calculation.prediction.p24h]].map(([label, value]) => <div key={String(label)}><span>{label}</span><strong>{percent(value as number)}</strong></div>)}</div>
         <div className="model-demo-factors"><h3>Основные факторы</h3>{state.calculation.prediction.factors.slice(0, 5).map((factor, index) => <div key={`${factor.horizon}-${factor.feature}-${index}`}><b>{modelFactorLabel(factor.feature)}</b><span>{factor.contribution >= 0 ? "+" : ""}{factor.contribution.toFixed(3)}</span></div>)}</div>
-        <div className="model-demo-actions"><button className="primary" disabled={!!state.busy || !!state.alertId || !canPublishModelDemo(state.calculation.prediction.decisions)} onClick={publish}>{state.alertId ? "Передано диспетчеру" : state.busy === "publishing" ? "Передача…" : "Передать диспетчеру"}</button>{state.alertId && <button className="secondary" onClick={() => setPath(`/alerts/${state.alertId}`)}>Открыть предупреждение</button>}</div>
+        <div className="model-demo-actions"><button className="primary" disabled={!!state.busy || !!state.alertId || !canPublishModelDemo(state.calculation.prediction.decisions)} onClick={publish}>{state.alertId ? "Передано диспетчеру" : state.busy === "publishing" ? "Передача…" : "Передать диспетчеру"}</button>{state.alertId && (role === "district_dispatcher" || role === "ods_dispatcher") && <button className="secondary" onClick={() => navigate(`/alerts/${state.alertId}`)}>Открыть предупреждение</button>}</div>
         {!canPublishModelDemo(state.calculation.prediction.decisions) && <p className="muted model-demo-hint">Порог предупреждения не превышен — передача диспетчеру не требуется.</p>}
       </section>}
     </>}

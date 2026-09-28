@@ -26,6 +26,16 @@ test("API сохраняет признак демонстрационного �
   expect(data.alerts[0].isDemo).toBe(true);
 });
 
+test("сырые факторы опубликованного прогноза получают подписи и сохраняют знак", () => {
+  const data = normalizeApiData({
+    objects: [{ id: "object-1", name: "Объект 1", channelCount: 1 }],
+    alerts: [{ id: "alert-1", episodeId: "episode-1", objectId: "object-1", objectName: "Объект 1", level: "yellow", probability: .7, calculatedAt: "2026-09-29T10:00:00Z", factors: [{ horizon: "12h", feature: "alarm_count_5m", value: 3, contribution: -.42 }] }],
+    requests: [], sms: [], metrics: {}
+  });
+
+  expect(data.alerts[0].factors[0]).toEqual({ label: "Срабатывания тревоги", contribution: -.42, detail: "Вклад в прогноз на горизонте «12 часов»" });
+});
+
 test("API демонстрации отделяет контекст от полного вектора признаков", () => {
   const scenario = normalizeModelDemoScenario({
     id: "held-out-01", sourceTimestamp: "2026-09-01T10:00:00Z", objectId: "42", objectName: "Объект 42",
