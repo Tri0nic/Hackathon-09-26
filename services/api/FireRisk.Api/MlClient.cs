@@ -4,7 +4,13 @@ using System.Text.Json;
 
 namespace FireRisk.Api;
 
-public sealed class MlClient(HttpClient httpClient)
+public interface IMlGateway
+{
+    Task<MlPrediction> PredictAsync(PredictRequest request, CancellationToken cancellationToken);
+    Task<object?> GetModelAsync(CancellationToken cancellationToken);
+}
+
+public sealed class MlClient(HttpClient httpClient) : IMlGateway
 {
     public async Task<MlPrediction> PredictAsync(PredictRequest request, CancellationToken cancellationToken)
     {

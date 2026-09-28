@@ -22,6 +22,11 @@ public sealed record ExecuteRequestAction(
 public sealed record ChangeRequestStatus(MaintenanceStatus Status);
 public sealed record CreatedMaintenanceRequest(Guid Id, string PublicId);
 public sealed record PredictRequest(Dictionary<string, double?> Features, int TopK = 5);
+public sealed record ModelDemoPredictionRequest(string ScenarioId);
+public sealed record ModelDemoPredictionResponse(
+    Guid CalculationId,
+    ModelDemoScenarioSummary Scenario,
+    MlPrediction Prediction);
 
 public sealed record MlFactor(string Horizon, string Feature, double Value, double Contribution);
 

@@ -12,11 +12,20 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("ConnectionStrings:Postgres is required");
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 builder.Services.AddSingleton<PgStore>();
-builder.Services.AddHttpClient<MlClient>(client =>
+builder.Services.AddHttpClient<IMlGateway, MlClient>(client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["Ml:BaseUrl"] ?? "http://localhost:8000");
     client.Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Ml:TimeoutSeconds", 10));
 });
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
+builder.Services.AddSingleton<ModelDemoCalculationCache>();
+builder.Services.AddSingleton(serviceProvider =>
+{
+    var environment = serviceProvider.GetRequiredService<IHostEnvironment>();
+    return new ModelDemoScenarioCatalog(Path.Combine(environment.ContentRootPath, "Data", "model-demo-scenarios.json"));
+});
+builder.Services.AddScoped<ModelDemoService>();
 
 var app = builder.Build();
 
@@ -92,7 +101,7 @@ app.MapPost("/api/requests/{id:guid}/executor-action", async (Guid id, ExecuteRe
 });
 app.MapGet("/api/sms", (PgStore store, CancellationToken ct) => store.GetSmsAsync(ct));
 
-app.MapPost("/api/objects/{id}/predict", async (string id, PredictRequest request, MlClient ml, PgStore store, CancellationToken ct) =>
+app.MapPost("/api/objects/{id}/predict", async (string id, PredictRequest request, IMlGateway ml, PgStore store, CancellationToken ct) =>
 {
     try
     {
@@ -109,10 +118,21 @@ app.MapPost("/api/objects/{id}/predict", async (string id, PredictRequest reques
     }
 });
 
-app.MapGet("/api/model/metrics", async (MlClient ml, CancellationToken ct) =>
+app.MapGet("/api/model/metrics", async (IMlGateway ml, CancellationToken ct) =>
 {
     try { return Results.Ok(await ml.GetModelAsync(ct)); }
     catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException) { return Results.StatusCode(503); }
+});
+
+app.MapGet("/api/model-demo/scenarios", (ModelDemoService service) => Results.Ok(service.List()));
+app.MapPost("/api/model-demo/predict", async (ModelDemoPredictionRequest request, ModelDemoService service, CancellationToken ct) =>
+{
+    try { return Results.Ok(await service.PredictAsync(request.ScenarioId, ct)); }
+    catch (KeyNotFoundException) { return Results.NotFound(new { error = "scenario not found" }); }
+    catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+    {
+        return Results.StatusCode(503);
+    }
 });
 
 app.Run();
