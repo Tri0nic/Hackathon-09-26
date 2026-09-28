@@ -102,6 +102,11 @@ export interface ModelDemoSensor {
   state: string;
 }
 
+export interface ModelDemoInput {
+  label: string;
+  value: string;
+}
+
 export interface ModelDemoScenario {
   id: string;
   sourceTimestamp: string;
@@ -110,6 +115,7 @@ export interface ModelDemoScenario {
   district: string;
   dangerousSection: string;
   sensors: ModelDemoSensor[];
+  inputs: ModelDemoInput[];
 }
 
 export interface ModelDemoFactor {

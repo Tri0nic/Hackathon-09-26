@@ -40,6 +40,42 @@ public sealed class ModelDemoScenarioCatalogTests : IDisposable
         Assert.Throws<KeyNotFoundException>(() => catalog.Get("missing"));
     }
 
+    [Fact]
+    public void Summary_exposes_only_curated_readable_inputs()
+    {
+        var scenario = new ModelDemoScenario(
+            "scenario-01",
+            new DateTimeOffset(2026, 9, 29, 9, 0, 0, TimeSpan.Zero),
+            "42",
+            "Объект 42",
+            "САО",
+            "ПК 1+00",
+            [new ModelDemoSensor("sensor-1", "Температура", "heat", "ПК 1+00", "61 °C", "warning")],
+            new Dictionary<string, double?>
+            {
+                ["event_count_30m"] = 17,
+                ["alarm_count_5m"] = 3,
+                ["malfunction_count_5m"] = 1,
+                ["smoke_heat_5m"] = 1,
+                ["gas_alarm_count_5m"] = 0,
+                ["stale_channel_count"] = null,
+            });
+
+        var summary = scenario.ToSummary();
+
+        Assert.Equal(
+            [
+                new ModelDemoInput("События за 30 минут", "17"),
+                new ModelDemoInput("Тревоги за 5 минут", "3"),
+                new ModelDemoInput("Неисправности за 5 минут", "1"),
+                new ModelDemoInput("Дым или нагрев", "Есть"),
+                new ModelDemoInput("Газовые тревоги за 5 минут", "0"),
+                new ModelDemoInput("Неактуальные каналы", "Нет данных"),
+            ],
+            summary.Inputs);
+        Assert.Null(typeof(ModelDemoScenarioSummary).GetProperty("Features"));
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, true)]

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Text.Json;
 
 namespace FireRisk.Api;
@@ -11,6 +12,8 @@ public sealed record ModelDemoSensor(
     string Value,
     string State);
 
+public sealed record ModelDemoInput(string Label, string Value);
+
 public sealed record ModelDemoScenarioSummary(
     string Id,
     DateTimeOffset SourceTimestamp,
@@ -18,7 +21,8 @@ public sealed record ModelDemoScenarioSummary(
     string ObjectName,
     string District,
     string DangerousSection,
-    IReadOnlyList<ModelDemoSensor> Sensors);
+    IReadOnlyList<ModelDemoSensor> Sensors,
+    IReadOnlyList<ModelDemoInput> Inputs);
 
 public sealed record ModelDemoScenario(
     string Id,
@@ -31,7 +35,27 @@ public sealed record ModelDemoScenario(
     IReadOnlyDictionary<string, double?> Features)
 {
     public ModelDemoScenarioSummary ToSummary() =>
-        new(Id, SourceTimestamp, ObjectId, ObjectName, District, DangerousSection, Sensors);
+        new(Id, SourceTimestamp, ObjectId, ObjectName, District, DangerousSection, Sensors, BuildInputs());
+
+    private IReadOnlyList<ModelDemoInput> BuildInputs() =>
+    [
+        NumberInput("События за 30 минут", "event_count_30m"),
+        NumberInput("Тревоги за 5 минут", "alarm_count_5m"),
+        NumberInput("Неисправности за 5 минут", "malfunction_count_5m"),
+        BooleanInput("Дым или нагрев", "smoke_heat_5m"),
+        NumberInput("Газовые тревоги за 5 минут", "gas_alarm_count_5m"),
+        NumberInput("Неактуальные каналы", "stale_channel_count"),
+    ];
+
+    private ModelDemoInput NumberInput(string label, string feature) =>
+        new(label, Features.TryGetValue(feature, out var value) && value.HasValue
+            ? value.Value.ToString("0.##", CultureInfo.InvariantCulture)
+            : "Нет данных");
+
+    private ModelDemoInput BooleanInput(string label, string feature) =>
+        new(label, Features.TryGetValue(feature, out var value) && value.HasValue
+            ? value.Value > 0 ? "Есть" : "Нет"
+            : "Нет данных");
 }
 
 public sealed class ModelDemoScenarioCatalog
