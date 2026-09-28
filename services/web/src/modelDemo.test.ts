@@ -58,8 +58,19 @@ test("повтор одного признака на разных горизо�
   expect(factors[0]).toMatchObject({ feature: "alarm_count_5m", contribution: .7 });
 });
 
+test("разные технические признаки с одной подписью не дублируют строку", () => {
+  const factors = uniqueModelFactors([
+    { horizon: "24h", feature: "active_state_duration", value: 2, contribution: .4 },
+    { horizon: "24h", feature: "object_state_code", value: 1, contribution: -.8 }
+  ]);
+
+  expect(factors).toHaveLength(1);
+  expect(factors[0]).toMatchObject({ feature: "object_state_code", contribution: -.8 });
+});
+
 test("сценарий получает короткое название по текущим показателям", () => {
   expect(modelDemoScenarioLabel([{ label: "Дым или нагрев", value: "Есть" }])).toBe("Дым или нагрев");
   expect(modelDemoScenarioLabel([{ label: "Неисправности за 5 минут", value: "2" }])).toBe("Неисправность оборудования");
+  expect(modelDemoScenarioLabel([{ label: "События за 30 минут", value: "91" }])).toBe("События оборудования");
   expect(modelDemoScenarioLabel([{ label: "Тревоги за 5 минут", value: "0" }])).toBe("Штатная работа");
 });

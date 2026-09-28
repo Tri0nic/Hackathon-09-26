@@ -65,8 +65,9 @@ export const modelFactorInfluence = (contribution: number): string => contributi
 export function uniqueModelFactors(factors: ModelDemoFactor[]): ModelDemoFactor[] {
   const unique = new Map<string, ModelDemoFactor>();
   for (const factor of factors) {
-    const current = unique.get(factor.feature);
-    if (!current || Math.abs(factor.contribution) > Math.abs(current.contribution)) unique.set(factor.feature, factor);
+    const label = modelFactorLabel(factor.feature);
+    const current = unique.get(label);
+    if (!current || Math.abs(factor.contribution) > Math.abs(current.contribution)) unique.set(label, factor);
   }
   return [...unique.values()].sort((left, right) => Math.abs(right.contribution) - Math.abs(left.contribution));
 }
@@ -78,5 +79,6 @@ export function modelDemoScenarioLabel(inputs: ModelDemoInput[]): string {
   if (positive("Газовые тревоги за 5 минут")) return "Газовая тревога";
   if (positive("Неисправности за 5 минут")) return "Неисправность оборудования";
   if (positive("Тревоги за 5 минут")) return "Срабатывания тревоги";
+  if (positive("События за 30 минут")) return "События оборудования";
   return "Штатная работа";
 }
