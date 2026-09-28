@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { alertKindLabel, allowedNavigation, countCriticalObjects, dashboardAlerts, dashboardDistrict, employees, formatDate, levelName, probabilityAtHorizon, profileFor, requestStatusName, riskLabel, smsDeliveryStatusName, smsProcessingStatusName, visibleObjectsFor } from "./domain";
 import { Empty, KindBadge, PageTitle, PicketMap, ProbabilityChart, RiskBadge } from "./components";
+import { ModelDemoPage } from "./ModelDemoPage";
 import type { DashboardHorizon } from "./domain";
 import type { Alert, AppData, Employee, ExecutorGroup, ExecutorRequestAction, MaintenanceRequest, RequestKind, RequestPriority, RequestStatus, RiskLevel, RiskObject, UserRole } from "./types";
 
@@ -83,7 +84,7 @@ function Dashboard({ data, role, setPath }: { data: AppData; role: UserRole; set
 }
 
 function AlertTable({ alerts, setPath, horizon }: { alerts: Alert[]; setPath: (path: string) => void; horizon?: DashboardHorizon }) {
-  return <div className="table-wrap"><table><thead><tr><th>Время</th><th>Объект и тип</th><th>Вероятность</th><th>Уровень и горизонт</th></tr></thead><tbody>{alerts.map((alert) => <tr key={alert.id} className="clickable" onClick={() => go(`/alerts/${alert.id}`, setPath)}><td>{formatDate(alert.calculatedAt)}</td><td><b>{alert.objectName}</b><small>{alertKindLabel(alert.kind)}</small></td><td><strong>{Math.round((horizon ? probabilityAtHorizon(alert, horizon) : alert.probability) * 100)}%</strong></td><td><RiskBadge level={alert.level} /></td></tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr><th>Время</th><th>Объект и тип</th><th>Вероятность</th><th>Уровень и горизонт</th></tr></thead><tbody>{alerts.map((alert) => <tr key={alert.id} className="clickable" onClick={() => go(`/alerts/${alert.id}`, setPath)}><td>{formatDate(alert.calculatedAt)}</td><td><b>{alert.objectName}</b><small>{alertKindLabel(alert.kind)} {alert.isDemo && <span className="demo-badge-inline">Демо</span>}</small></td><td><strong>{Math.round((horizon ? probabilityAtHorizon(alert, horizon) : alert.probability) * 100)}%</strong></td><td><RiskBadge level={alert.level} /></td></tr>)}</tbody></table></div>;
 }
 
 function ObjectsPage({ data, path, setPath }: { data: AppData; path: string; setPath: (path: string) => void }) {
@@ -123,7 +124,7 @@ function AlertDetails({ alert, sms, requests, setPath, onRefresh, role }: { aler
     await onRefresh();
   };
   return <>
-    <PageTitle title={`${alertKindLabel(alert.kind)} · ${Math.round(alert.probability * 100)}%`} subtitle={`${alert.objectName} · Технический ID эпизода: ${alert.episodeId}`}><KindBadge alert={alert} /><RiskBadge level={alert.level} /></PageTitle>
+    <PageTitle title={`${alertKindLabel(alert.kind)} · ${Math.round(alert.probability * 100)}%`} subtitle={`${alert.objectName} · Технический ID эпизода: ${alert.episodeId}`}><KindBadge alert={alert} />{alert.isDemo && <span className="demo-badge-inline">Демо</span>}<RiskBadge level={alert.level} /></PageTitle>
     {alert.stale && <div className="notice warning">Показан последний успешный прогноз: ML-сервис временно недоступен.</div>}
     <div className="detail-grid">
       <section className="panel hero-alert"><div className={`risk-score level-${alert.level}`}><strong>{Math.round(alert.probability * 100)}%</strong><span>{riskLabel(alert.level)}</span></div><div><dl className="facts"><div><dt>Рассчитано</dt><dd>{formatDate(alert.calculatedAt)}</dd></div><div><dt>Опасный участок</dt><dd>{alert.picketFrom ? `ПК ${alert.picketFrom.toFixed(2)}–${alert.picketTo?.toFixed(2)}` : "Не определён"}</dd></div></dl></div></section>
@@ -353,6 +354,7 @@ export function App({ initialData, initialPath, initialRole }: { initialData?: A
   else if (effectivePath.startsWith("/objects")) page = <ObjectsPage data={scopedData} path={effectivePath} setPath={setPath} />;
   else if (effectivePath.startsWith("/alerts")) page = <AlertsPage data={scopedData} path={effectivePath} setPath={setPath} onRefresh={refresh} role={userRole} />;
   else if (effectivePath === "/requests") page = <RequestsPage data={scopedData} role={userRole} employee={selectedEmployee} onRefresh={refresh} setPath={setPath} />;
+  else if (effectivePath === "/model-demo") page = <ModelDemoPage setPath={setPath} onRefresh={refresh} />;
   else if (effectivePath.startsWith("/profile/")) page = <EmployeeProfilePage id={effectivePath.split("/")[2]} objects={scopedData.objects} availableEmployees={visibleEmployees} />;
   else if (effectivePath === "/profile") page = <ProfilePage role={userRole} employee={selectedEmployee} objects={data.objects} />;
   else if (effectivePath === "/analytics") page = <AnalyticsPage data={scopedData} />;
@@ -360,5 +362,5 @@ export function App({ initialData, initialPath, initialRole }: { initialData?: A
   else if (effectivePath === "/sms") page = <SmsPage data={scopedData} setPath={setPath} />;
   else page = <Dashboard data={scopedData} role={userRole} setPath={setPath} />;
   const currentProfile = profileFor(userRole, selectedEmployee, data.objects);
-  return <div className="app-shell"><aside className="sidebar"><div className="brand"><span>МК</span><div><b>Москоллектор</b><small>Контроль инфраструктуры</small></div></div><nav>{visibleNav.map(([href, label, icon]) => <Link key={href} to={href} setPath={setPath} className={activeRoot === href ? "active" : ""}><span>{icon}</span>{label}</Link>)}</nav></aside><main><div className="topbar"><div><span className="pulse" />Данные обновлены 2 мин назад</div><div className="top-user"><label className="role-switch">Роль<select aria-label="Текущая роль" value={userRole} onChange={(event) => changeRole(event.target.value as UserRole)}>{roles.map((item) => <option value={item.value} key={item.value}>{item.name}</option>)}</select></label>{roleEmployees.length > 0 && <label className="role-switch">Сотрудник<select aria-label="Текущий сотрудник" value={selectedEmployee?.id} onChange={(event) => setEmployeeId(event.target.value)}>{roleEmployees.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<Link to="/profile" setPath={setPath} className="profile-link"><span className="avatar">{role.initials}</span><b>{currentProfile.name}</b></Link></div></div><div className="content">{page}</div></main></div>;
+  return <div className="app-shell"><aside className="sidebar"><div className="brand"><span>МК</span><div><b>Москоллектор</b><small>Контроль инфраструктуры</small></div></div><nav>{visibleNav.map(([href, label, icon]) => <Link key={href} to={href} setPath={setPath} className={activeRoot === href ? "active" : ""}><span>{icon}</span>{label}</Link>)}</nav><div className="sidebar-foot"><Link to="/model-demo" setPath={setPath} className={activeRoot === "/model-demo" ? "active" : ""}><span>◇</span>Демонстрация модели</Link></div></aside><main><div className="topbar"><div><span className="pulse" />Данные обновлены 2 мин назад</div><div className="top-user"><label className="role-switch">Роль<select aria-label="Текущая роль" value={userRole} onChange={(event) => changeRole(event.target.value as UserRole)}>{roles.map((item) => <option value={item.value} key={item.value}>{item.name}</option>)}</select></label>{roleEmployees.length > 0 && <label className="role-switch">Сотрудник<select aria-label="Текущий сотрудник" value={selectedEmployee?.id} onChange={(event) => setEmployeeId(event.target.value)}>{roleEmployees.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<Link to="/profile" setPath={setPath} className="profile-link"><span className="avatar">{role.initials}</span><b>{currentProfile.name}</b></Link></div></div><div className="content">{page}</div></main></div>;
 }

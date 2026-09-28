@@ -92,8 +92,16 @@ test("крайние пикеты занимают всю ширину лине�
 test("роль определяет доступные разделы", () => {
   expect(allowedNavigation("ods_dispatcher")).toContain("/analytics");
   expect(allowedNavigation("district_dispatcher")).not.toContain("/analytics");
-  expect(allowedNavigation("technician")).toEqual(["/requests", "/objects", "/profile"]);
-  expect(allowedNavigation("response_team")).toEqual(["/requests", "/objects", "/profile"]);
+  expect(allowedNavigation("technician")).toEqual(["/requests", "/objects", "/profile", "/model-demo"]);
+  expect(allowedNavigation("response_team")).toEqual(["/requests", "/objects", "/profile", "/model-demo"]);
+  expect(allowedNavigation("ods_dispatcher")).toContain("/model-demo");
+  expect(allowedNavigation("district_dispatcher")).toContain("/model-demo");
+});
+
+test("исполнитель видит новые демонстрационные объекты своего района", () => {
+  const objects = [...demoData.objects, { ...demoData.objects[0], id: "model-demo-held-out-01", name: "Тестовый объект" }];
+
+  expect(profileFor("technician", employees[0], objects).objects.map((item) => item.id)).toContain("model-demo-held-out-01");
 });
 
 test("ОДС создаёт только экстренную заявку для ГБР", () => {

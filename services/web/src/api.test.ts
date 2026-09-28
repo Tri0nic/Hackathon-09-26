@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { api, normalizeApiData } from "./api";
+import { api, normalizeApiData, normalizeModelDemoCalculation, normalizeModelDemoScenario } from "./api";
 
 test("узкий API-контракт деградирует в безопасные UI-значения", () => {
   const data = normalizeApiData({
@@ -11,8 +11,34 @@ test("узкий API-контракт деградирует в безопасн
   expect(data.objects[0].channels).toEqual([]);
   expect(data.objects[0].district).toBe("Не указан");
   expect(data.alerts[0].kind).toBe("fire");
+  expect(data.alerts[0].isDemo).toBe(false);
   expect(data.alerts[0].context).toBe("Данные не предоставлены.");
   expect(data.metrics.labelSource).toContain("Proxy");
+});
+
+test("API сохраняет признак демонстрационного предупреждения", () => {
+  const data = normalizeApiData({
+    objects: [{ id: "object-1", name: "Объект 1", channelCount: 3 }],
+    alerts: [{ id: "alert-1", episodeId: "episode-1", objectId: "object-1", objectName: "Объект 1", level: "red", horizon: "6h", probability: 0.8, calculatedAt: "2026-09-27T12:00:00Z", modelVersion: "v1", stale: false, current: true, isDemo: true }],
+    requests: [], sms: [], metrics: {}
+  });
+
+  expect(data.alerts[0].isDemo).toBe(true);
+});
+
+test("API демонстрации отделяет контекст от полного вектора признаков", () => {
+  const scenario = normalizeModelDemoScenario({
+    id: "held-out-01", sourceTimestamp: "2026-09-01T10:00:00Z", objectId: "42", objectName: "Объект 42",
+    district: "САО", dangerousSection: "ПК 1+00", sensors: [], features: { forbidden: 1 }, probability: .99
+  });
+  const calculation = normalizeModelDemoCalculation({
+    calculationId: "calc-1", scenario,
+    prediction: { calculated_at: "2026-09-29T10:00:00Z", p_now: .1, p_6h: .2, p_12h: .3, p_24h: .4, decisions: { "6h": true }, factors: [] }
+  });
+
+  expect(scenario).not.toHaveProperty("features");
+  expect(scenario).not.toHaveProperty("probability");
+  expect(calculation.prediction).toMatchObject({ pNow: .1, p6h: .2, p12h: .3, p24h: .4 });
 });
 
 test("недоставленное SMS техника из API не переходит в обработку", () => {

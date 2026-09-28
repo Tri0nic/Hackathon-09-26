@@ -1,6 +1,6 @@
 import { demoData } from "./demo";
 import { alertKindLabel, createPublicRequestId, smsRecipientsForAlert, smsRoleLabel } from "./domain";
-import type { Alert, AppData, Channel, CreateRequestInput, Decision, Employee, ExecutorGroup, ExecutorRequestAction, MaintenanceRequest, ModelMetrics, RequestComment, RequestKind, RequestPriority, RequestStatus, RiskLevel, RiskObject, SmsDeliveryStatus, SmsNotification, SmsProcessingStatus } from "./types";
+import type { Alert, AppData, Channel, CreateRequestInput, Decision, Employee, ExecutorGroup, ExecutorRequestAction, MaintenanceRequest, ModelDemoCalculation, ModelDemoFactor, ModelDemoScenario, ModelMetrics, RequestComment, RequestKind, RequestPriority, RequestStatus, RiskLevel, RiskObject, SmsDeliveryStatus, SmsNotification, SmsProcessingStatus } from "./types";
 
 const baseUrl = import.meta.env.VITE_API_URL ?? "";
 let memory = structuredClone(demoData);
@@ -32,7 +32,7 @@ export function normalizeApiData(payload: RawApiPayload): AppData {
       id: text(row.id), episodeId: text(row.episodeId), objectId: text(row.objectId), objectName: text(row.objectName, "Объект не указан"),
       kind: "fire", level: alertLevel, horizon: text(row.horizon, "24h"), probability: numeric(row.probability),
       pNow: numeric(row.pNow), p6h: numeric(row.p6h), p12h: numeric(row.p12h), p24h: numeric(row.p24h, numeric(row.probability)),
-      calculatedAt: text(row.calculatedAt, new Date(0).toISOString()), modelVersion: text(row.modelVersion, "не указана"), stale: row.stale === true, current: row.current !== false,
+      calculatedAt: text(row.calculatedAt, new Date(0).toISOString()), modelVersion: text(row.modelVersion, "не указана"), stale: row.stale === true, current: row.current !== false, isDemo: row.isDemo === true,
       picketFrom: typeof row.picketFrom === "number" ? row.picketFrom : undefined, picketTo: typeof row.picketTo === "number" ? row.picketTo : undefined,
       channels: list<Channel>(row.channels), factors: list<Alert["factors"][number]>(row.factors), recommendation: text(row.recommendation, "Провести проверку объекта."),
       context: text(row.context, "Данные не предоставлены."), recipients: list<string>(row.recipients).length ? list<string>(row.recipients) : recipients(alertLevel),
@@ -89,7 +89,44 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
   return response.status === 204 ? (undefined as T) : response.json();
 }
 
+export function normalizeModelDemoScenario(row: Record<string, unknown>): ModelDemoScenario {
+  return {
+    id: text(row.id), sourceTimestamp: text(row.sourceTimestamp), objectId: text(row.objectId), objectName: text(row.objectName),
+    district: text(row.district), dangerousSection: text(row.dangerousSection), sensors: list<ModelDemoScenario["sensors"][number]>(row.sensors)
+  };
+}
+
+export function normalizeModelDemoCalculation(row: Record<string, unknown>): ModelDemoCalculation {
+  const scenario = row.scenario as Record<string, unknown>;
+  const prediction = row.prediction as Record<string, unknown>;
+  return {
+    calculationId: text(row.calculationId), scenario: normalizeModelDemoScenario(scenario),
+    prediction: {
+      calculatedAt: text(prediction.calculated_at), pNow: numeric(prediction.p_now), p6h: numeric(prediction.p_6h),
+      p12h: numeric(prediction.p_12h), p24h: numeric(prediction.p_24h),
+      decisions: (prediction.decisions ?? {}) as Record<string, boolean>, factors: list<ModelDemoFactor>(prediction.factors)
+    }
+  };
+}
+
 export const api = {
+  async listModelDemoScenarios(): Promise<ModelDemoScenario[]> {
+    const rows = await json<Record<string, unknown>[]>("/api/model-demo/scenarios");
+    return rows.map(normalizeModelDemoScenario);
+  },
+
+  async predictModelDemo(scenarioId: string): Promise<ModelDemoCalculation> {
+    return normalizeModelDemoCalculation(await json<Record<string, unknown>>("/api/model-demo/predict", { method: "POST", body: JSON.stringify({ scenarioId }) }));
+  },
+
+  async publishModelDemo(calculationId: string): Promise<{ alertId: string }> {
+    return json("/api/model-demo/publish", { method: "POST", body: JSON.stringify({ calculationId }) });
+  },
+
+  async clearModelDemoResults(): Promise<void> {
+    await json("/api/model-demo/results", { method: "DELETE" });
+  },
+
   async load(): Promise<AppData> {
     if (import.meta.env.VITE_DEMO_MODE !== "false") return structuredClone(memory);
     try {

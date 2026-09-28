@@ -17,7 +17,7 @@ const dispatcherProfiles = {
 
 export function profileFor(role: UserRole, employee: Employee | undefined, objects: RiskObject[]) {
   if (employee) {
-    return { name: employee.name, role, districts: employee.districts, objects: objects.filter((item) => employee.objectIds.includes(item.id)) };
+    return { name: employee.name, role, districts: employee.districts, objects: objects.filter((item) => employee.objectIds.includes(item.id) || employee.districts.includes(item.district)) };
   }
   const dispatcher = dispatcherProfiles[role as keyof typeof dispatcherProfiles];
   const districts = dispatcher?.districts ? [...dispatcher.districts] : [...new Set(objects.map((item) => item.district))];
@@ -45,9 +45,9 @@ export function createPublicRequestId(existing: string[], random: () => number =
 }
 
 export function allowedNavigation(role: UserRole): string[] {
-  if (role === "ods_dispatcher") return ["/", "/objects", "/alerts", "/requests", "/analytics", "/sms", "/profile"];
-  if (role === "district_dispatcher") return ["/", "/objects", "/alerts", "/requests", "/sms", "/profile"];
-  return ["/requests", "/objects", "/profile"];
+  if (role === "ods_dispatcher") return ["/", "/objects", "/alerts", "/requests", "/analytics", "/sms", "/profile", "/model-demo"];
+  if (role === "district_dispatcher") return ["/", "/objects", "/alerts", "/requests", "/sms", "/profile", "/model-demo"];
+  return ["/requests", "/objects", "/profile", "/model-demo"];
 }
 
 export function canCreateRequest(role: UserRole, executor: ExecutorGroup, priority: RequestPriority): boolean {

@@ -81,6 +81,7 @@ export interface Alert {
   modelVersion: string;
   stale: boolean;
   current: boolean;
+  isDemo?: boolean;
   picketFrom?: number;
   picketTo?: number;
   channels: Channel[];
@@ -90,6 +91,48 @@ export interface Alert {
   recipients: string[];
   history: LevelHistory[];
   decisions: Decision[];
+}
+
+export interface ModelDemoSensor {
+  id: string;
+  name: string;
+  sensorType: string;
+  picket?: string | null;
+  value: string;
+  state: string;
+}
+
+export interface ModelDemoScenario {
+  id: string;
+  sourceTimestamp: string;
+  objectId: string;
+  objectName: string;
+  district: string;
+  dangerousSection: string;
+  sensors: ModelDemoSensor[];
+}
+
+export interface ModelDemoFactor {
+  horizon: string;
+  feature: string;
+  value: number;
+  contribution: number;
+}
+
+export interface ModelDemoPrediction {
+  calculatedAt: string;
+  pNow: number;
+  p6h: number;
+  p12h: number;
+  p24h: number;
+  decisions: Record<string, boolean>;
+  factors: ModelDemoFactor[];
+}
+
+export interface ModelDemoCalculation {
+  calculationId: string;
+  scenario: ModelDemoScenario;
+  prediction: ModelDemoPrediction;
 }
 
 export interface MaintenanceRequest {

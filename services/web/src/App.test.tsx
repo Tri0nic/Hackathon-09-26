@@ -36,6 +36,27 @@ test("шапка позволяет выбрать одну из четырёх 
   expect(html).toContain("Группа реагирования");
 });
 
+test.each(["technician", "district_dispatcher", "ods_dispatcher", "response_team"] as const)(
+  "страница демонстрации доступна роли %s и ссылка расположена внизу меню",
+  (role) => {
+    const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/model-demo" initialRole={role} />);
+
+    expect(html).toContain("Демонстрация модели");
+    expect(html).toContain('class="sidebar-foot"');
+    expect(html.indexOf("sidebar-foot")).toBeGreaterThan(html.indexOf("</nav>"));
+    expect(html).not.toContain("Тестировщик");
+  }
+);
+
+test("демо-предупреждение получает компактную плашку без нового столбца", () => {
+  const data = structuredClone(demoData);
+  data.alerts[0].isDemo = true;
+  const html = renderToStaticMarkup(<App initialData={data} initialPath="/alerts" initialRole="ods_dispatcher" />);
+
+  expect(html).toContain(">Демо<");
+  expect(html).not.toContain("<th>Демо</th>");
+});
+
 test("верхняя шапка не показывает демонстрационную плашку", () => {
   const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/" />);
 
