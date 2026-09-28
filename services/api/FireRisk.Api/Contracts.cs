@@ -20,6 +20,7 @@ public sealed record ExecuteRequestAction(
     ExecutorRequestAction Action,
     string? Comment);
 public sealed record ChangeRequestStatus(MaintenanceStatus Status);
+public sealed record CreatedMaintenanceRequest(Guid Id, string PublicId);
 public sealed record PredictRequest(Dictionary<string, double?> Features, int TopK = 5);
 
 public sealed record MlFactor(string Horizon, string Feature, double Value, double Contribution);

@@ -57,26 +57,34 @@ public sealed class BusinessRulesTests
     }
 
     [Fact]
-    public void Request_notification_reaches_every_technician()
+    public void Red_notification_reaches_each_technician_in_the_alert_district()
     {
-        var recipients = RequestNotificationPolicy.Recipients(ExecutorGroup.Technician);
+        var recipients = RequestNotificationPolicy.Recipients(AlertLevel.Red, "САО");
 
-        Assert.Equal(new[] { "tech-ivanov", "tech-petrova", "tech-sokolov" }, recipients.Select(x => x.Id));
+        Assert.Equal(new[] { "tech-ivanov", "tech-petrova" }, recipients.Select(x => x.Id));
+        Assert.All(recipients, recipient => Assert.Equal(ExecutorGroup.Technician, recipient.Group));
     }
 
     [Fact]
-    public void Request_notification_reaches_every_response_member()
+    public void Black_notification_reaches_district_technicians_and_response_team_without_duplicates()
     {
-        var recipients = RequestNotificationPolicy.Recipients(ExecutorGroup.ResponseTeam);
+        var recipients = RequestNotificationPolicy.Recipients(AlertLevel.Black, "ЮАО");
 
-        Assert.Equal(new[] { "response-orlova", "response-volkov" }, recipients.Select(x => x.Id));
+        Assert.Equal(new[] { "tech-sokolov", "response-orlova", "response-volkov" }, recipients.Select(x => x.Id));
+        Assert.Equal(recipients.Count, recipients.Select(x => x.Id).Distinct().Count());
     }
 
     [Theory]
-    [InlineData(MaintenanceStatus.New, MaintenanceStatus.UnderReview, true)]
+    [InlineData(AlertLevel.Yellow)]
+    [InlineData(AlertLevel.Green)]
+    public void Non_critical_levels_do_not_create_sms(AlertLevel level) =>
+        Assert.Empty(RequestNotificationPolicy.Recipients(level, "САО"));
+
+    [Theory]
+    [InlineData(MaintenanceStatus.New, MaintenanceStatus.InProgress, true)]
     [InlineData(MaintenanceStatus.InProgress, MaintenanceStatus.Completed, true)]
     [InlineData(MaintenanceStatus.Completed, MaintenanceStatus.InProgress, false)]
-    [InlineData(MaintenanceStatus.Rejected, MaintenanceStatus.Scheduled, false)]
+    [InlineData(MaintenanceStatus.Rejected, MaintenanceStatus.New, false)]
     public void Request_status_transition_is_controlled(
         MaintenanceStatus from,
         MaintenanceStatus to,

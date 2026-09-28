@@ -1,5 +1,5 @@
 import { demoData } from "./demo";
-import { alertKindLabel, employees, smsRoleLabel } from "./domain";
+import { alertKindLabel, createPublicRequestId, smsRecipientsForAlert, smsRoleLabel } from "./domain";
 import type { Alert, AppData, Channel, CreateRequestInput, Decision, Employee, ExecutorGroup, ExecutorRequestAction, MaintenanceRequest, ModelMetrics, RequestComment, RequestKind, RequestPriority, RequestStatus, RiskLevel, RiskObject, SmsDeliveryStatus, SmsNotification, SmsProcessingStatus } from "./types";
 
 const baseUrl = import.meta.env.VITE_API_URL ?? "";
@@ -18,7 +18,7 @@ const text = (value: unknown, fallback = "") => typeof value === "string" ? valu
 const numeric = (value: unknown, fallback = 0) => typeof value === "number" && Number.isFinite(value) ? value : fallback;
 const level = (value: unknown): RiskLevel => levels.includes(value as RiskLevel) ? value as RiskLevel : "green";
 const list = <T,>(value: unknown): T[] => Array.isArray(value) ? value as T[] : [];
-const recipients = (value: RiskLevel) => value === "black" ? ["Техник", "Диспетчер района", "Диспетчер ОДС", "Группа реагирования"] : value === "red" ? ["Техник", "Диспетчер района", "Диспетчер ОДС"] : value === "yellow" ? ["Диспетчер района", "Диспетчер ОДС"] : ["Диспетчер ОДС"];
+const recipients = (value: RiskLevel) => value === "black" ? ["Техник", "Группа немедленного реагирования"] : value === "red" ? ["Техник"] : [];
 const deliveryStatuses: SmsDeliveryStatus[] = ["delivered", "failed"];
 const processingStatuses: SmsProcessingStatus[] = ["undelivered", "new", "in_progress", "completed", "cancelled"];
 const executorGroups: ExecutorGroup[] = ["technician", "response_team"];
@@ -30,7 +30,7 @@ export function normalizeApiData(payload: RawApiPayload): AppData {
     const alertLevel = level(row.level);
     return {
       id: text(row.id), episodeId: text(row.episodeId), objectId: text(row.objectId), objectName: text(row.objectName, "Объект не указан"),
-      kind: row.kind === "malfunction" ? "malfunction" : "fire", level: alertLevel, horizon: text(row.horizon, "24h"), probability: numeric(row.probability),
+      kind: "fire", level: alertLevel, horizon: text(row.horizon, "24h"), probability: numeric(row.probability),
       pNow: numeric(row.pNow), p6h: numeric(row.p6h), p12h: numeric(row.p12h), p24h: numeric(row.p24h, numeric(row.probability)),
       calculatedAt: text(row.calculatedAt, new Date(0).toISOString()), modelVersion: text(row.modelVersion, "не указана"), stale: row.stale === true, current: row.current !== false,
       picketFrom: typeof row.picketFrom === "number" ? row.picketFrom : undefined, picketTo: typeof row.picketTo === "number" ? row.picketTo : undefined,
@@ -44,7 +44,7 @@ export function normalizeApiData(payload: RawApiPayload): AppData {
     return { id: text(row.id), name: text(row.name, "Объект без названия"), district: text(row.district, "Не указан"), channelCount: numeric(row.channelCount), level: related?.level ?? level(row.level), probability: related?.probability ?? numeric(row.probability), channels: list<Channel>(row.channels) };
   });
   const requests = payload.requests.map((row): MaintenanceRequest => ({
-    id: text(row.id), alertId: text(row.alertId), objectId: text(row.objectId), objectName: text(row.objectName, objects.find((item) => item.id === row.objectId)?.name ?? "Объект не указан"),
+    id: text(row.id), publicId: text(row.publicId, text(row.id).replace(/\D/g, "").slice(-5).padStart(5, "0")), alertId: text(row.alertId), objectId: text(row.objectId), objectName: text(row.objectName, objects.find((item) => item.id === row.objectId)?.name ?? "Объект не указан"),
     picket: text(row.picket) || undefined, recommendation: text(row.recommendation, "Провести проверку объекта."),
     requestKind: requestKinds.includes(row.requestKind as RequestKind) ? row.requestKind as RequestKind : "inspection",
     executorGroup: executorGroups.includes(row.executorGroup as ExecutorGroup) ? row.executorGroup as ExecutorGroup : "technician",
@@ -53,7 +53,7 @@ export function normalizeApiData(payload: RawApiPayload): AppData {
     dueAt: text(row.dueAt) || undefined, comment: text(row.comment) || undefined,
     creatorRole: text(row.creatorRole, "district_dispatcher"), assigneeId: text(row.assigneeId) || undefined, assigneeName: text(row.assigneeName) || undefined,
     comments: list<RequestComment>(row.comments),
-    status: text(row.status, "new") as RequestStatus,
+    status: (["under_review", "scheduled"].includes(text(row.status)) ? "in_progress" : text(row.status, "new")) as RequestStatus,
     createdAt: text(row.createdAt, new Date(0).toISOString()), updatedAt: text(row.updatedAt, new Date(0).toISOString())
   }));
   const sms = payload.sms.map((row): SmsNotification => {
@@ -118,11 +118,11 @@ export const api = {
     const alert = memory.alerts.find((item) => item.id === input.alertId);
     if (!alert) throw new Error("Предупреждение не найдено");
     const response = import.meta.env.VITE_DEMO_MODE === "false"
-      ? await json<{ id: string }>(`/api/alerts/${input.alertId}/requests`, { method: "POST", body: JSON.stringify({ ...input, recommendation: alert.recommendation }) })
-      : { id: `REQ-${1043 + memory.requests.length}` };
+      ? await json<{ id: string; publicId: string }>(`/api/alerts/${input.alertId}/requests`, { method: "POST", body: JSON.stringify({ ...input, recommendation: alert.recommendation }) })
+      : { id: `REQ-${Date.now()}`, publicId: createPublicRequestId(memory.requests.map((request) => request.publicId)) };
     const now = new Date().toISOString();
     const value: MaintenanceRequest = {
-      id: response.id, alertId: input.alertId, objectId: alert.objectId, objectName: alert.objectName,
+      id: response.id, publicId: response.publicId, alertId: input.alertId, objectId: alert.objectId, objectName: alert.objectName,
       picket: alert.channels[0]?.picketRaw ?? undefined, recommendation: alert.recommendation,
       requestKind: input.requestKind, executorGroup: input.executorGroup, priority: input.priority,
       description: input.description, dueAt: input.dueAt, comment: input.comment, creatorRole: input.creatorRole,
@@ -130,7 +130,8 @@ export const api = {
     };
     memory.requests.unshift(value);
     if (import.meta.env.VITE_DEMO_MODE !== "false") {
-      employees.filter((employee) => employee.group === input.executorGroup).forEach((employee, index) => {
+      const district = memory.objects.find((item) => item.id === alert.objectId)?.district ?? "Не указан";
+      smsRecipientsForAlert(alert.level, district).forEach((employee, index) => {
         memory.sms.unshift({
           id: `SMS-${Date.now()}-${index}`, requestId: value.id, episodeId: alert.episodeId,
           episodeTitle: `${alertKindLabel(alert.kind)} · ${alert.objectName}`, alertLevel: alert.level,

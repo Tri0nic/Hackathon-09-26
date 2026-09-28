@@ -114,7 +114,7 @@ test("у своей заявки исполнитель видит управл�
   expect(html).toContain("Добавить комментарий");
   expect(html).toContain("Снять с себя");
   expect(html).toContain("Выполнено");
-  expect(html).toContain("Отменить");
+  expect(html).toContain("Отклонить");
 });
 
 test("районный диспетчер открывает полную форму заявки", () => {
@@ -159,4 +159,91 @@ test("исполнитель видит занятые коллегами зая
 
   expect(html).toContain("Занятые заявки группы");
   expect(html).toContain("Мария Андреевна Петрова");
+});
+
+test("верхний профиль не показывает служебную подпись и открывает страницу сотрудника", () => {
+  const header = renderToStaticMarkup(<App initialData={demoData} initialPath="/requests" initialRole="technician" />);
+  const profile = renderToStaticMarkup(<App initialData={demoData} initialPath="/profile" initialRole="technician" />);
+
+  expect(header).toContain('href="/profile"');
+  expect(header).not.toContain("Закреплённые объекты");
+  expect(profile).toContain("Профиль сотрудника");
+  expect(profile).toContain("Илья Сергеевич Иванов");
+  expect(profile).toContain("САО");
+  expect(profile).toContain("Коллектор №1 · участок Северный");
+});
+
+test("журнал предупреждений не обещает технические сбои и не содержит решения", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/alerts" initialRole="ods_dispatcher" />);
+
+  expect(html).not.toContain("Пожарные риски и технические сбои — раздельно");
+  expect(html).not.toContain("<th>Решение</th>");
+  expect(html).not.toContain("Технический сбой");
+});
+
+test("заявка показывает пятизначный номер, исходный комментарий и кто её взял", () => {
+  const data = structuredClone(demoData);
+  data.requests[0].comment = "Проверить доступ в помещение до выезда";
+  const html = renderToStaticMarkup(<App initialData={data} initialPath="/requests" initialRole="ods_dispatcher" />);
+
+  expect(html).toContain("Кто взял задачу");
+  expect(html).toContain("Комментарий к заявке");
+  expect(html).toContain("Проверить доступ в помещение до выезда");
+  expect(html).toMatch(/>\d{5}</);
+});
+
+test("в заявках доступны только четыре согласованных статуса", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/requests" initialRole="ods_dispatcher" />);
+
+  expect(html).toContain("Новая");
+  expect(html).toContain("В работе");
+  expect(html).toContain("Выполнена");
+  expect(html).toContain("Отклонена");
+  expect(html).not.toContain("На рассмотрении");
+  expect(html).not.toContain("Запланирована");
+});
+
+test("оба диспетчера создают заявку из списка, районный видит только свой район", () => {
+  const district = renderToStaticMarkup(<App initialData={demoData} initialPath="/requests" initialRole="district_dispatcher" />);
+  const chief = renderToStaticMarkup(<App initialData={demoData} initialPath="/requests" initialRole="ods_dispatcher" />);
+
+  expect(district).toContain('href="/requests/new"');
+  expect(district).toContain("Коллектор №1 · участок Северный");
+  expect(district).not.toContain("Коллектор №9 · участок Южный");
+  expect(chief).toContain('href="/requests/new"');
+  expect(chief).toContain("Коллектор №9 · участок Южный");
+});
+
+test("форма из списка предлагает диспетчеру доступные объекты", () => {
+  const district = renderToStaticMarkup(<App initialData={demoData} initialPath="/requests/new" initialRole="district_dispatcher" />);
+  const chief = renderToStaticMarkup(<App initialData={demoData} initialPath="/requests/new" initialRole="ods_dispatcher" />);
+
+  expect(district).toContain("Объект и предупреждение");
+  expect(district).toContain("Коллектор №1 · участок Северный");
+  expect(district).not.toContain("Коллектор №9 · участок Южный");
+  expect(chief).toContain("Коллектор №9 · участок Южный");
+});
+
+test("районный диспетчер не создаёт заявку по прямой ссылке на чужой район", () => {
+  const foreignAlert = demoData.alerts.find((alert) => alert.objectId === "demo-object-4")!;
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath={`/alerts/${foreignAlert.id}/request`} initialRole="district_dispatcher" />);
+
+  expect(html).toContain("Предупреждение не найдено");
+  expect(html).not.toContain("Коллектор №9 · участок Южный");
+});
+
+test("карточка предупреждения подписывает технический ID эпизода", () => {
+  const alert = demoData.alerts[0];
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath={`/alerts/${alert.id}`} initialRole="ods_dispatcher" />);
+
+  expect(html).toContain(`Технический ID эпизода: ${alert.episodeId}`);
+});
+
+test("журнал SMS не повторяет ответственного в строках одного инцидента", () => {
+  const data = structuredClone(demoData);
+  data.sms[1].assigneeName = data.sms[0].assigneeName;
+  data.sms[1].requestId = "ANOTHER-REQUEST-SAME-INCIDENT";
+  const html = renderToStaticMarkup(<App initialData={data} initialPath="/sms" initialRole="ods_dispatcher" />);
+
+  expect(html.match(/Илья Сергеевич Иванов/g)).toHaveLength(2);
 });

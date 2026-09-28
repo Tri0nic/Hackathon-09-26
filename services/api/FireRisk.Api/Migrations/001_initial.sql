@@ -103,6 +103,12 @@ alter table maintenance_requests add column if not exists comment text;
 alter table maintenance_requests add column if not exists creator_role text not null default 'district_dispatcher';
 alter table maintenance_requests add column if not exists assignee_id text;
 alter table maintenance_requests add column if not exists assignee_name text;
+alter table maintenance_requests add column if not exists public_id text;
+update maintenance_requests
+set public_id = lpad((10000 + numbered.row_number)::text, 5, '0')
+from (select id, row_number() over (order by created_at, id) row_number from maintenance_requests where public_id is null) numbered
+where maintenance_requests.id = numbered.id;
+create unique index if not exists ux_maintenance_requests_public_id on maintenance_requests(public_id);
 
 create table if not exists request_comments (
     id uuid primary key,
@@ -199,69 +205,16 @@ insert into maintenance_requests(id, alert_id, object_id, picket, factors, recom
     ('77777777-7777-7777-7777-777777777777', '33333333-3333-3333-3333-333333333333', 'demo-object-3', '08+20', '[]', 'Проверить температурный датчик', 'scheduled', '2026-09-27T12:20:00+03:00', '2026-09-27T12:24:00+03:00')
 on conflict (id) do nothing;
 
-insert into sms_notifications(id, episode_id, alert_level, recipient_id, role, sent_at, content, status)
-select md5('EP-DEMO-MAIN|' || level || '|' || role || '|' || sent_at::text)::uuid,
-       'EP-DEMO-MAIN', level, role, role, sent_at,
-       case when note='deescalation' then 'Деэскалация BLACK → RED' else 'Демонстрационное уведомление: уровень ' || upper(level) end,
-       'delivered'
-from (values
-    ('green','OdsDispatcher','2026-09-27T11:30:00+03:00'::timestamptz,'level'),
-    ('yellow','DistrictDispatcher','2026-09-27T11:50:00+03:00'::timestamptz,'level'),
-    ('yellow','OdsDispatcher','2026-09-27T11:50:00+03:00'::timestamptz,'level'),
-    ('red','Technician','2026-09-27T12:10:00+03:00'::timestamptz,'level'),
-    ('red','DistrictDispatcher','2026-09-27T12:10:00+03:00'::timestamptz,'level'),
-    ('red','OdsDispatcher','2026-09-27T12:10:00+03:00'::timestamptz,'level'),
-    ('black','Technician','2026-09-27T12:30:00+03:00'::timestamptz,'level'),
-    ('black','DistrictDispatcher','2026-09-27T12:30:00+03:00'::timestamptz,'level'),
-    ('black','OdsDispatcher','2026-09-27T12:30:00+03:00'::timestamptz,'level'),
-    ('black','ResponseTeam','2026-09-27T12:30:00+03:00'::timestamptz,'level'),
-    ('red','Technician','2026-09-27T12:42:00+03:00'::timestamptz,'deescalation'),
-    ('red','DistrictDispatcher','2026-09-27T12:42:00+03:00'::timestamptz,'deescalation'),
-    ('red','OdsDispatcher','2026-09-27T12:42:00+03:00'::timestamptz,'deescalation')
-) x(level, role, sent_at, note)
-on conflict (id) do nothing;
+update maintenance_requests set public_id='01042' where id='77777777-7777-7777-7777-777777777777' and public_id is null;
+update maintenance_requests set status='in_progress' where status in ('under_review', 'scheduled');
 
-update sms_notifications
-set assignee_name = 'Илья Сергеевич Иванов',
-    processing_status = 'in_progress',
-    status = 'delivered'
-where episode_id = 'EP-DEMO-MAIN';
-
-insert into sms_notifications(id, episode_id, alert_level, recipient_id, role, sent_at, content, status, assignee_name, processing_status)
-values
-    (md5('EP-DEMO-FAULT|yellow|OdsDispatcher')::uuid, 'EP-DEMO-FAULT', 'yellow', 'OdsDispatcher', 'OdsDispatcher', '2026-09-27T12:31:04+03:00', 'Технический сбой: потеря связи с каналом на Восточном участке', 'delivered', 'Наталья Викторовна Орлова', 'in_progress'),
-    (md5('EP-DEMO-GREEN|green|OdsDispatcher')::uuid, 'EP-DEMO-GREEN', 'green', 'OdsDispatcher', 'OdsDispatcher', '2026-09-27T12:14:05+03:00', 'Зелёный уровень: продолжить наблюдение за температурным трендом', 'delivered', 'Мария Андреевна Петрова', 'completed'),
-    (md5('EP-DEMO-BLACK|black|ResponseTeam')::uuid, 'EP-DEMO-BLACK', 'black', 'ResponseTeam', 'ResponseTeam', '2026-09-27T12:48:05+03:00', 'Чёрный уровень: немедленно проверить задымление на Южном участке', 'failed', null, 'undelivered')
-on conflict (id) do update set
-    content = excluded.content,
-    status = excluded.status,
-    assignee_name = excluded.assignee_name,
-    processing_status = excluded.processing_status;
-
-update sms_notifications
-set status = 'delivered',
-    processing_status = case when processing_status in ('completed', 'in_progress') then processing_status else 'in_progress' end
-where id <> md5('EP-DEMO-BLACK|black|ResponseTeam')::uuid;
-
-update sms_notifications
-set status = 'failed', assignee_name = null, processing_status = 'undelivered'
-where id = md5('EP-DEMO-BLACK|black|ResponseTeam')::uuid;
+delete from sms_notifications where role not in ('Technician', 'ResponseTeam');
+update risk_alerts set alert_kind='fire' where alert_kind='malfunction';
 
 -- The current notification contract starts at request creation. Remove legacy
--- risk-level demo messages and seed one notification per target employee.
+-- risk-level demo messages; RED/BLACK request creation repopulates the journal.
 delete from sms_notifications where request_id is null;
-
-insert into sms_notifications(
-    id, episode_id, alert_level, recipient_id, recipient_name, role, request_id,
-    sent_at, content, status, assignee_name, processing_status)
-values
-    (md5('REQ-DEMO|tech-ivanov')::uuid, 'EP-DEMO-GREEN', 'green', 'tech-ivanov', 'Илья Сергеевич Иванов', 'Technician',
-     '77777777-7777-7777-7777-777777777777', '2026-09-27T12:20:03+03:00', 'Создана заявка: проверить температурный датчик', 'delivered', null, 'new'),
-    (md5('REQ-DEMO|tech-petrova')::uuid, 'EP-DEMO-GREEN', 'green', 'tech-petrova', 'Мария Андреевна Петрова', 'Technician',
-     '77777777-7777-7777-7777-777777777777', '2026-09-27T12:20:04+03:00', 'Создана заявка: проверить температурный датчик', 'delivered', null, 'new'),
-    (md5('REQ-DEMO|tech-sokolov')::uuid, 'EP-DEMO-GREEN', 'green', 'tech-sokolov', 'Алексей Дмитриевич Соколов', 'Technician',
-     '77777777-7777-7777-7777-777777777777', '2026-09-27T12:20:05+03:00', 'Создана заявка: проверить температурный датчик', 'failed', null, 'undelivered')
-on conflict (id) do nothing;
+delete from sms_notifications where alert_level not in ('red', 'black');
 
 update sms_notifications s
 set processing_status='new', assignee_name=null

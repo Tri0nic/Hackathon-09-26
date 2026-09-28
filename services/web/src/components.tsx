@@ -6,7 +6,7 @@ export function RiskBadge({ level }: { level: RiskLevel }) {
 }
 
 export function KindBadge({ alert }: { alert: Alert }) {
-  return <span className={`kind-badge ${alert.kind}`}>{alert.kind === "malfunction" ? "⌁" : "△"} {alertKindLabel(alert.kind)}</span>;
+  return <span className={`kind-badge ${alert.kind}`}>△ {alertKindLabel(alert.kind)}</span>;
 }
 
 export function PageTitle({ title, subtitle, children }: { title: string; subtitle: string; children?: React.ReactNode }) {

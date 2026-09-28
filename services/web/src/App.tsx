@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import { alertKindLabel, allowedNavigation, employees, formatDate, requestStatusName, riskLabel, smsDeliveryStatusName, smsProcessingStatusName } from "./domain";
+import { alertKindLabel, allowedNavigation, employees, formatDate, profileFor, requestStatusName, riskLabel, smsDeliveryStatusName, smsProcessingStatusName, visibleObjectsFor } from "./domain";
 import { Empty, KindBadge, PageTitle, PicketMap, ProbabilityChart, RiskBadge } from "./components";
 import type { Alert, AppData, Employee, ExecutorGroup, ExecutorRequestAction, MaintenanceRequest, RequestKind, RequestPriority, RequestStatus, RiskObject, UserRole } from "./types";
 
@@ -10,10 +10,10 @@ const nav = [
 ] as const;
 
 const roles = [
-  { value: "technician", name: "Техник", initials: "ТХ", scope: "Закреплённые объекты" },
-  { value: "district_dispatcher", name: "Диспетчер района", initials: "ДР", scope: "Объекты района" },
-  { value: "ods_dispatcher", name: "Диспетчер ОДС", initials: "ДО", scope: "Все объекты" },
-  { value: "response_team", name: "Группа реагирования", initials: "ГР", scope: "Критические события BLACK" }
+  { value: "technician", name: "Техник", initials: "ТХ" },
+  { value: "district_dispatcher", name: "Диспетчер района", initials: "ДР" },
+  { value: "ods_dispatcher", name: "Диспетчер ОДС (главный)", initials: "ДО" },
+  { value: "response_team", name: "Группа реагирования", initials: "ГР" }
 ] as const;
 
 function savedRole(): UserRole {
@@ -55,12 +55,12 @@ function Dashboard({ data, setPath }: { data: AppData; setPath: (path: string) =
       </section>
       <section className="panel"><div className="panel-head"><div><h2>Динамика главного риска</h2><p>{data.alerts[0]?.objectName}</p></div></div>{data.alerts[0] && <ProbabilityChart alert={data.alerts[0]} />}</section>
     </div>
-    <section className="panel"><div className="panel-head"><div><h2>Последние предупреждения</h2><p>Расчёты модели и технические события</p></div><Link to="/alerts" setPath={setPath}>Открыть журнал →</Link></div><AlertTable alerts={data.alerts} setPath={setPath} /></section>
+    <section className="panel"><div className="panel-head"><div><h2>Последние предупреждения</h2><p>Расчёты модели пожарного риска</p></div><Link to="/alerts" setPath={setPath}>Открыть журнал →</Link></div><AlertTable alerts={data.alerts} setPath={setPath} /></section>
   </>;
 }
 
 function AlertTable({ alerts, setPath }: { alerts: Alert[]; setPath: (path: string) => void }) {
-  return <div className="table-wrap"><table><thead><tr><th>Время</th><th>Объект и тип</th><th>Вероятность</th><th>Уровень и горизонт</th><th>Решение</th></tr></thead><tbody>{alerts.map((alert) => <tr key={alert.id} className="clickable" onClick={() => go(`/alerts/${alert.id}`, setPath)}><td>{formatDate(alert.calculatedAt)}</td><td><b>{alert.objectName}</b><small>{alertKindLabel(alert.kind)}</small></td><td><strong>{Math.round(alert.probability * 100)}%</strong></td><td><RiskBadge level={alert.level} /></td><td>{alert.decisions[0]?.decision ?? <span className="muted">Ожидает решения</span>}</td></tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr><th>Время</th><th>Объект и тип</th><th>Вероятность</th><th>Уровень и горизонт</th></tr></thead><tbody>{alerts.map((alert) => <tr key={alert.id} className="clickable" onClick={() => go(`/alerts/${alert.id}`, setPath)}><td>{formatDate(alert.calculatedAt)}</td><td><b>{alert.objectName}</b><small>{alertKindLabel(alert.kind)}</small></td><td><strong>{Math.round(alert.probability * 100)}%</strong></td><td><RiskBadge level={alert.level} /></td></tr>)}</tbody></table></div>;
 }
 
 function ObjectsPage({ data, path, setPath }: { data: AppData; path: string; setPath: (path: string) => void }) {
@@ -86,7 +86,7 @@ function ChannelTable({ channels }: { channels: RiskObject["channels"] }) {
 function AlertsPage({ data, path, setPath, onRefresh, role }: { data: AppData; path: string; setPath: (path: string) => void; onRefresh: () => Promise<void>; role: UserRole }) {
   const id = path.split("/")[2];
   const alert = data.alerts.find((item) => item.id === id);
-  if (!alert) return <><PageTitle title="Журнал предупреждений" subtitle="Пожарные риски и технические сбои — раздельно" /><section className="panel"><AlertTable alerts={data.alerts} setPath={setPath} /></section></>;
+  if (!alert) return <><PageTitle title="Журнал предупреждений" subtitle="Прогнозы пожарного риска по объектам" /><section className="panel"><AlertTable alerts={data.alerts} setPath={setPath} /></section></>;
   return <AlertDetails alert={alert} sms={data.sms.filter((item) => item.episodeId === alert.episodeId)} setPath={setPath} onRefresh={onRefresh} role={role} />;
 }
 
@@ -100,7 +100,7 @@ function AlertDetails({ alert, sms, setPath, onRefresh, role }: { alert: Alert; 
     await onRefresh();
   };
   return <>
-    <PageTitle title={`${alertKindLabel(alert.kind)} · ${Math.round(alert.probability * 100)}%`} subtitle={`${alert.objectName} · эпизод ${alert.episodeId}`}><KindBadge alert={alert} /><RiskBadge level={alert.level} /></PageTitle>
+    <PageTitle title={`${alertKindLabel(alert.kind)} · ${Math.round(alert.probability * 100)}%`} subtitle={`${alert.objectName} · Технический ID эпизода: ${alert.episodeId}`}><KindBadge alert={alert} /><RiskBadge level={alert.level} /></PageTitle>
     {alert.stale && <div className="notice warning">Показан последний успешный прогноз: ML-сервис временно недоступен.</div>}
     <div className="detail-grid">
       <section className="panel hero-alert"><div className={`risk-score level-${alert.level}`}><strong>{Math.round(alert.probability * 100)}%</strong><span>{riskLabel(alert.level)}</span></div><div><dl className="facts"><div><dt>Рассчитано</dt><dd>{formatDate(alert.calculatedAt)}</dd></div><div><dt>Модель</dt><dd>{alert.modelVersion}</dd></div><div><dt>Опасный участок</dt><dd>{alert.picketFrom ? `ПК ${alert.picketFrom.toFixed(2)}–${alert.picketTo?.toFixed(2)}` : "Не определён"}</dd></div><div><dt>Адресаты</dt><dd>{alert.recipients.join(", ")}</dd></div></dl></div></section>
@@ -121,7 +121,7 @@ function AlertDetails({ alert, sms, setPath, onRefresh, role }: { alert: Alert; 
   </>;
 }
 
-function RequestForm({ alert, role, setPath, onRefresh }: { alert: Alert; role: UserRole; setPath: (path: string) => void; onRefresh: () => Promise<void> }) {
+function RequestForm({ alert, role, setPath, onRefresh, alerts, onAlertChange, cancelTo }: { alert: Alert; role: UserRole; setPath: (path: string) => void; onRefresh: () => Promise<void>; alerts?: Alert[]; onAlertChange?: (id: string) => void; cancelTo?: string }) {
   const ods = role === "ods_dispatcher";
   const [requestKind, setRequestKind] = useState<RequestKind>(ods ? "emergency" : "repair");
   const [executorGroup, setExecutorGroup] = useState<ExecutorGroup>(ods ? "response_team" : "technician");
@@ -140,6 +140,7 @@ function RequestForm({ alert, role, setPath, onRefresh }: { alert: Alert; role: 
   return <><PageTitle title={ods ? "Экстренная заявка ОДС" : "Создание заявки"} subtitle={`${alert.objectName} · ${alertKindLabel(alert.kind)}`} />
     <form className="panel request-form" onSubmit={submit}>
       <div className="form-grid">
+        {alerts && <label className="field">Объект и предупреждение<select value={alert.id} onChange={(event) => onAlertChange?.(event.target.value)}>{alerts.map((item) => <option key={item.id} value={item.id}>{item.objectName}</option>)}</select></label>}
         <label className="field">Тип заявки<select value={requestKind} disabled={ods} onChange={(e) => setRequestKind(e.target.value as RequestKind)}>{!ods && <><option value="inspection">Осмотр</option><option value="repair">Ремонт</option></>}<option value="emergency">Экстренный выезд</option></select></label>
         <label className="field">Группа исполнителей<select value={executorGroup} disabled={ods} onChange={(e) => setExecutorGroup(e.target.value as ExecutorGroup)}><option value="technician">Техники</option><option value="response_team">Группа быстрого реагирования</option></select></label>
         <label className="field">Приоритет<select value={priority} disabled={ods} onChange={(e) => setPriority(e.target.value as RequestPriority)}>{!ods && <><option value="normal">Обычный</option><option value="high">Высокий</option></>}<option value="emergency">Экстренный</option></select></label>
@@ -147,9 +148,16 @@ function RequestForm({ alert, role, setPath, onRefresh }: { alert: Alert; role: 
       </div>
       <label className="field">Описание неисправности<textarea required value={description} onChange={(e) => setDescription(e.target.value)} /></label>
       <label className="field">Комментарий<textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Дополнительная информация" /></label>
-      <div className="form-actions"><Link to={`/alerts/${alert.id}`} setPath={setPath} className="button secondary">Отмена</Link><button className="primary" type="submit">Создать и уведомить исполнителей</button></div>
+      <div className="form-actions"><Link to={cancelTo ?? `/alerts/${alert.id}`} setPath={setPath} className="button secondary">Отмена</Link><button className="primary" type="submit">Создать и уведомить исполнителей</button></div>
       {error && <div className="notice warning">{error}</div>}
     </form></>;
+}
+
+function NewRequestPage({ data, role, setPath, onRefresh }: { data: AppData; role: UserRole; setPath: (path: string) => void; onRefresh: () => Promise<void> }) {
+  const [alertId, setAlertId] = useState(data.alerts[0]?.id ?? "");
+  const alert = data.alerts.find((item) => item.id === alertId) ?? data.alerts[0];
+  if (!alert) return <><PageTitle title="Создание заявки" subtitle="Нет доступных предупреждений" /><Empty>Для доступных объектов предупреждений нет.</Empty></>;
+  return <RequestForm key={alert.id} alert={alert} role={role} setPath={setPath} onRefresh={onRefresh} alerts={data.alerts} onAlertChange={setAlertId} cancelTo="/requests" />;
 }
 
 type RequestTableMode = "dispatcher" | "available" | "mine" | "busy";
@@ -178,7 +186,7 @@ function RequestActionDialog({ request, employee, action, onClose, onRefresh }: 
   };
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="request-action-title">
     <form onSubmit={submit}>
-      <div className="modal-head"><div><h2 id="request-action-title">{titles[action]}</h2><p>{request.id} · {request.objectName}</p></div><button type="button" className="icon-button" aria-label="Закрыть" onClick={onClose}>×</button></div>
+      <div className="modal-head"><div><h2 id="request-action-title">{titles[action]}</h2><p>{request.publicId} · {request.objectName}</p></div><button type="button" className="icon-button" aria-label="Закрыть" onClick={onClose}>×</button></div>
       <dl className="action-summary"><div><dt>Заявка</dt><dd>{request.description}</dd></div><div><dt>Исполнитель</dt><dd>{employee.name}</dd></div></dl>
       {action !== "claim" && <label className="field">{action === "cancel" ? "Причина отмены" : action === "comment" ? "Комментарий о выполненных работах" : "Комментарий (необязательно)"}<textarea autoFocus value={comment} onChange={(event) => setComment(event.target.value)} placeholder={action === "comment" ? "Опишите, что было проверено или сделано" : "Добавьте пояснение к действию"} /></label>}
       {action === "release" && <p className="modal-hint">После подтверждения заявка вернётся в общий пул исполнителей.</p>}
@@ -192,12 +200,12 @@ function RequestActionDialog({ request, employee, action, onClose, onRefresh }: 
 function RequestTable({ requests, mode, employee, onRefresh }: { requests: AppData["requests"]; mode: RequestTableMode; employee?: Employee; onRefresh: () => Promise<void> }) {
   const [dialog, setDialog] = useState<{ request: MaintenanceRequest; action: DialogAction }>();
   const ownAction = (request: MaintenanceRequest, action: ExecutorRequestAction) => setDialog({ request, action });
-  return <><div className="table-wrap"><table><thead><tr><th>ID / объект</th><th>Описание</th><th>Группа</th><th>Приоритет</th><th>Ответственный</th><th>Статус / действия</th></tr></thead><tbody>{requests.map((request) => <tr key={request.id}><td><b>{request.id}</b><small>{request.objectName}</small></td><td>{request.description}<small>{request.picket ?? "Пикет не указан"}</small>{request.comments?.length > 0 && <details className="request-comments"><summary>Комментарии ({request.comments.length})</summary>{request.comments.map((item) => <article key={item.id}><b>{item.employeeName}</b><time>{formatDate(item.createdAt)}</time><p>{item.text}</p></article>)}</details>}</td><td>{request.executorGroup === "technician" ? "Техники" : "ГБР"}</td><td>{request.priority === "emergency" ? "Экстренный" : request.priority === "high" ? "Высокий" : "Обычный"}</td><td>{request.assigneeName ?? <span className="muted">Не назначен</span>}</td><td>{mode === "dispatcher" ? <select value={request.status} onChange={async (event) => { await api.updateRequest(request.id, event.target.value as RequestStatus); await onRefresh(); }}>{Object.entries(requestStatusName).map(([value, name]) => <option value={value} key={value}>{name}</option>)}</select> : mode === "available" ? <button className="primary compact" aria-haspopup="dialog" onClick={() => employee && setDialog({ request, action: "claim" })}>Взять в работу</button> : mode === "mine" && request.status === "in_progress" ? <div className="request-actions"><button className="secondary compact" aria-haspopup="dialog" onClick={() => ownAction(request, "comment")}>Добавить комментарий</button><button className="icon-button release" aria-label="Снять с себя" title="Снять с себя" aria-haspopup="dialog" onClick={() => ownAction(request, "release")}>×</button><button className="success-button compact" aria-haspopup="dialog" onClick={() => ownAction(request, "complete")}>Выполнено</button><button className="danger-button compact" aria-haspopup="dialog" onClick={() => ownAction(request, "cancel")}>Отменить</button></div> : requestStatusName[request.status]}</td></tr>)}</tbody></table></div>{dialog && employee && <RequestActionDialog request={dialog.request} employee={employee} action={dialog.action} onClose={() => setDialog(undefined)} onRefresh={onRefresh} />}</>;
+  return <><div className="table-wrap"><table><thead><tr><th>ID / объект</th><th>Описание</th><th>Группа</th><th>Приоритет</th><th>Кто взял задачу</th><th>Статус / действия</th></tr></thead><tbody>{requests.map((request) => <tr key={request.id}><td><b>{request.publicId}</b><small>{request.objectName}</small></td><td>{request.description}<small>{request.picket ?? "Пикет не указан"}</small>{request.comment && <div className="request-original-comment"><b>Комментарий к заявке</b><p>{request.comment}</p></div>}{request.comments?.length > 0 && <details className="request-comments"><summary>Комментарии исполнителей ({request.comments.length})</summary>{request.comments.map((item) => <article key={item.id}><b>{item.employeeName}</b><time>{formatDate(item.createdAt)}</time><p>{item.text}</p></article>)}</details>}</td><td>{request.executorGroup === "technician" ? "Техники" : "ГБР"}</td><td>{request.priority === "emergency" ? "Экстренный" : request.priority === "high" ? "Высокий" : "Обычный"}</td><td>{request.assigneeName ?? <span className="muted">Не назначен</span>}</td><td>{mode === "dispatcher" ? <select value={request.status} onChange={async (event) => { await api.updateRequest(request.id, event.target.value as RequestStatus); await onRefresh(); }}>{Object.entries(requestStatusName).map(([value, name]) => <option value={value} key={value}>{name}</option>)}</select> : mode === "available" ? <button className="primary compact" aria-haspopup="dialog" onClick={() => employee && setDialog({ request, action: "claim" })}>Взять в работу</button> : mode === "mine" && request.status === "in_progress" ? <div className="request-actions"><button className="secondary compact" aria-haspopup="dialog" onClick={() => ownAction(request, "comment")}>Добавить комментарий</button><button className="icon-button release" aria-label="Снять с себя" title="Снять с себя" aria-haspopup="dialog" onClick={() => ownAction(request, "release")}>×</button><button className="success-button compact" aria-haspopup="dialog" onClick={() => ownAction(request, "complete")}>Выполнено</button><button className="danger-button compact" aria-haspopup="dialog" onClick={() => ownAction(request, "cancel")}>Отклонить</button></div> : requestStatusName[request.status]}</td></tr>)}</tbody></table></div>{dialog && employee && <RequestActionDialog request={dialog.request} employee={employee} action={dialog.action} onClose={() => setDialog(undefined)} onRefresh={onRefresh} />}</>;
 }
 
-function RequestsPage({ data, role, employee, onRefresh }: { data: AppData; role: UserRole; employee?: Employee; onRefresh: () => Promise<void> }) {
+function RequestsPage({ data, role, employee, onRefresh, setPath }: { data: AppData; role: UserRole; employee?: Employee; onRefresh: () => Promise<void>; setPath: (path: string) => void }) {
   const dispatcher = role === "district_dispatcher" || role === "ods_dispatcher";
-  if (dispatcher) return <><PageTitle title="Заявки" subtitle="Контроль исполнения и технического обслуживания" /><section className="panel"><RequestTable requests={data.requests} mode="dispatcher" employee={employee} onRefresh={onRefresh} />{!data.requests.length && <Empty>Заявок пока нет.</Empty>}</section></>;
+  if (dispatcher) return <><PageTitle title="Заявки" subtitle="Контроль исполнения и технического обслуживания"><Link className="button primary" to="/requests/new" setPath={setPath}>Создать заявку</Link></PageTitle><section className="panel"><RequestTable requests={data.requests} mode="dispatcher" employee={employee} onRefresh={onRefresh} />{!data.requests.length && <Empty>Заявок пока нет.</Empty>}</section></>;
   const group = role as ExecutorGroup;
   const relevant = data.requests.filter((request) => request.executorGroup === group);
   const mine = relevant.filter((request) => request.assigneeId === employee?.id);
@@ -209,21 +217,31 @@ function RequestsPage({ data, role, employee, onRefresh }: { data: AppData; role
     <section className="panel"><div className="panel-head"><div><h2>Занятые заявки группы</h2><p>Уже закреплены за коллегами</p></div></div><RequestTable requests={busy} mode="busy" employee={employee} onRefresh={onRefresh} />{!busy.length && <Empty>Занятых коллегами заявок нет.</Empty>}</section></>;
 }
 
+function ProfilePage({ role, employee, objects }: { role: UserRole; employee?: Employee; objects: RiskObject[] }) {
+  const profile = profileFor(role, employee, objects);
+  const roleName = roles.find((item) => item.value === role)?.name ?? role;
+  return <><PageTitle title="Профиль сотрудника" subtitle={roleName} /><div className="profile-grid"><section className="panel profile-card"><div className="profile-avatar">{profile.name.split(" ").slice(0, 2).map((part) => part[0]).join("")}</div><h2>{profile.name}</h2><p>{roleName}</p></section><section className="panel"><h2>Районы ответственности</h2><div className="profile-tags">{profile.districts.map((district) => <span key={district}>{district}</span>)}</div></section><section className="panel profile-objects"><h2>Объекты</h2>{profile.objects.map((object) => <article key={object.id}><b>{object.name}</b><small>{object.district}</small></article>)}</section></div></>;
+}
+
 function AnalyticsPage({ data }: { data: AppData }) {
   const primary = data.alerts[0];
   return <><PageTitle title="Аналитика" subtitle="Качество proxy-модели и динамика прогнозов" /><div className="notice info"><b>Важно:</b> показатели рассчитаны на временной proxy-разметке MVP и не являются подтверждённым качеством прогнозирования реальных пожаров.</div><div className="kpi-grid"><article className="kpi info"><span>ROC AUC</span><strong>{data.metrics.rocAuc.toFixed(2)}</strong><small>{data.metrics.modelVersion}</small></article><article className="kpi success"><span>Precision</span><strong>{Math.round(data.metrics.precision * 100)}%</strong><small>proxy-разметка</small></article><article className="kpi warning"><span>Recall</span><strong>{Math.round(data.metrics.recall * 100)}%</strong><small>proxy-разметка</small></article><article className="kpi"><span>Тревог / объект / сутки</span><strong>{data.metrics.alertsPerDay.toFixed(1)}</strong><small>демонстрационная выборка</small></article></div><div className="dashboard-grid"><section className="panel wide"><div className="panel-head"><div><h2>Динамика вероятностей</h2><p>{primary?.objectName}</p></div></div>{primary && <ProbabilityChart alert={primary} />}</section><section className="panel"><h2>Источник оценки</h2><p className="metric-source">{data.metrics.labelSource}</p><dl className="facts"><div><dt>Версия модели</dt><dd>{data.metrics.modelVersion}</dd></div><div><dt>Назначение</dt><dd>Демонстрация MVP</dd></div><div><dt>Ограничение</dt><dd>Нет журнала подтверждённых пожаров</dd></div></dl></section></div></>;
 }
 
 function SmsTable({ sms, alerts, setPath }: { sms: AppData["sms"]; alerts: AppData["alerts"]; setPath: (path: string) => void }) {
+  const incidentsWithAssignee = new Set<string>();
   return <div className="table-wrap sms-table"><table><thead><tr><th>Время</th><th>Объект и тип</th><th>Уровень происшествия</th><th>Получатель</th><th>Причина</th><th>Ответственный</th><th>Доставка</th><th>Обработка</th></tr></thead><tbody>{sms.map((item) => {
     const alert = alerts.find((candidate) => candidate.episodeId === item.episodeId);
+    const incidentKey = item.episodeId;
+    const showAssignee = Boolean(item.assigneeName) && !incidentsWithAssignee.has(incidentKey);
+    if (showAssignee) incidentsWithAssignee.add(incidentKey);
     return <tr key={item.id} className="clickable sms-row" onClick={(event) => { if (!(event.target as HTMLElement).closest("a")) go(`/sms/${item.id}`, setPath); }}>
       <td>{formatDate(item.sentAt)}</td>
       <td><Link to={`/sms/${item.id}`} setPath={setPath}><b>{alert?.objectName ?? item.episodeTitle}</b><small>{alert ? alertKindLabel(alert.kind) : "Событие"}</small></Link></td>
       <td><span className={`risk-badge level-${item.alertLevel}`}><i />{riskLabel(item.alertLevel)}</span></td>
       <td><b>{item.recipientName}</b></td>
       <td>{item.incidentSummary}</td>
-      <td>{item.assigneeName ?? <span className="muted">Не назначен</span>}</td>
+      <td>{showAssignee ? item.assigneeName : <span className="muted">—</span>}</td>
       <td><span className={`delivery ${item.status}`}>{smsDeliveryStatusName[item.status]}</span></td>
       <td><span className={`processing ${item.processingStatus}`}>{smsProcessingStatusName[item.processingStatus]}</span></td>
     </tr>;
@@ -290,18 +308,23 @@ export function App({ initialData, initialPath, initialRole }: { initialData?: A
   }, [path, effectivePath]);
   if (!data) return <div className="loading">Загрузка данных…</div>;
   let page: React.ReactNode;
-  const executorData = userRole === "technician" || userRole === "response_team" ? { ...data, objects: data.objects.filter((object) => data.requests.some((request) => request.executorGroup === userRole && request.objectId === object.id)) } : data;
+  const visibleObjects = visibleObjectsFor(userRole, selectedEmployee, data.objects);
+  const visibleObjectIds = new Set(visibleObjects.map((object) => object.id));
+  const scopedData = { ...data, objects: visibleObjects, alerts: data.alerts.filter((alert) => visibleObjectIds.has(alert.objectId)), requests: data.requests.filter((request) => visibleObjectIds.has(request.objectId)), sms: data.sms.filter((item) => data.alerts.some((alert) => alert.episodeId === item.episodeId && visibleObjectIds.has(alert.objectId))) };
   const requestMatch = effectivePath.match(/^\/alerts\/([^/]+)\/request$/);
   if (requestMatch && (userRole === "district_dispatcher" || userRole === "ods_dispatcher")) {
-    const alert = data.alerts.find((item) => item.id === requestMatch[1]);
+    const alert = scopedData.alerts.find((item) => item.id === requestMatch[1]);
     page = alert ? <RequestForm alert={alert} role={userRole} setPath={setPath} onRefresh={refresh} /> : <Empty>Предупреждение не найдено.</Empty>;
   }
-  else if (effectivePath.startsWith("/objects")) page = <ObjectsPage data={executorData} path={effectivePath} setPath={setPath} />;
-  else if (effectivePath.startsWith("/alerts")) page = <AlertsPage data={data} path={effectivePath} setPath={setPath} onRefresh={refresh} role={userRole} />;
-  else if (effectivePath === "/requests") page = <RequestsPage data={data} role={userRole} employee={selectedEmployee} onRefresh={refresh} />;
-  else if (effectivePath === "/analytics") page = <AnalyticsPage data={data} />;
-  else if (effectivePath.startsWith("/sms/")) page = <SmsDetailsPage data={data} id={effectivePath.split("/")[2]} setPath={setPath} />;
-  else if (effectivePath === "/sms") page = <SmsPage data={data} setPath={setPath} />;
-  else page = <Dashboard data={data} setPath={setPath} />;
-  return <div className="app-shell"><aside className="sidebar"><div className="brand"><span>МК</span><div><b>Москоллектор</b><small>Контроль инфраструктуры</small></div></div><nav>{visibleNav.map(([href, label, icon]) => <Link key={href} to={href} setPath={setPath} className={activeRoot === href ? "active" : ""}><span>{icon}</span>{label}</Link>)}</nav></aside><main><div className="topbar"><div><span className="pulse" />Данные обновлены 2 мин назад</div><div className="top-user">{data.demo && <span className="demo-badge">DEMO</span>}<label className="role-switch">Роль<select aria-label="Текущая роль" value={userRole} onChange={(event) => changeRole(event.target.value as UserRole)}>{roles.map((item) => <option value={item.value} key={item.value}>{item.name}</option>)}</select></label>{roleEmployees.length > 0 && <label className="role-switch">Сотрудник<select aria-label="Текущий сотрудник" value={selectedEmployee?.id} onChange={(event) => setEmployeeId(event.target.value)}>{roleEmployees.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<span className="avatar">{role.initials}</span><div><b>{selectedEmployee?.name ?? role.name}</b><small>{role.scope}</small></div></div></div><div className="content">{page}</div></main></div>;
+  else if (effectivePath === "/requests/new" && (userRole === "district_dispatcher" || userRole === "ods_dispatcher")) page = <NewRequestPage data={scopedData} role={userRole} setPath={setPath} onRefresh={refresh} />;
+  else if (effectivePath.startsWith("/objects")) page = <ObjectsPage data={scopedData} path={effectivePath} setPath={setPath} />;
+  else if (effectivePath.startsWith("/alerts")) page = <AlertsPage data={scopedData} path={effectivePath} setPath={setPath} onRefresh={refresh} role={userRole} />;
+  else if (effectivePath === "/requests") page = <RequestsPage data={scopedData} role={userRole} employee={selectedEmployee} onRefresh={refresh} setPath={setPath} />;
+  else if (effectivePath === "/profile") page = <ProfilePage role={userRole} employee={selectedEmployee} objects={data.objects} />;
+  else if (effectivePath === "/analytics") page = <AnalyticsPage data={scopedData} />;
+  else if (effectivePath.startsWith("/sms/")) page = <SmsDetailsPage data={scopedData} id={effectivePath.split("/")[2]} setPath={setPath} />;
+  else if (effectivePath === "/sms") page = <SmsPage data={scopedData} setPath={setPath} />;
+  else page = <Dashboard data={scopedData} setPath={setPath} />;
+  const currentProfile = profileFor(userRole, selectedEmployee, data.objects);
+  return <div className="app-shell"><aside className="sidebar"><div className="brand"><span>МК</span><div><b>Москоллектор</b><small>Контроль инфраструктуры</small></div></div><nav>{visibleNav.map(([href, label, icon]) => <Link key={href} to={href} setPath={setPath} className={activeRoot === href ? "active" : ""}><span>{icon}</span>{label}</Link>)}</nav></aside><main><div className="topbar"><div><span className="pulse" />Данные обновлены 2 мин назад</div><div className="top-user">{data.demo && <span className="demo-badge">DEMO</span>}<label className="role-switch">Роль<select aria-label="Текущая роль" value={userRole} onChange={(event) => changeRole(event.target.value as UserRole)}>{roles.map((item) => <option value={item.value} key={item.value}>{item.name}</option>)}</select></label>{roleEmployees.length > 0 && <label className="role-switch">Сотрудник<select aria-label="Текущий сотрудник" value={selectedEmployee?.id} onChange={(event) => setEmployeeId(event.target.value)}>{roleEmployees.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<Link to="/profile" setPath={setPath} className="profile-link"><span className="avatar">{role.initials}</span><b>{currentProfile.name}</b></Link></div></div><div className="content">{page}</div></main></div>;
 }

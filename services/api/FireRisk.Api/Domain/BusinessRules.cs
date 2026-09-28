@@ -17,25 +17,32 @@ public static class RequestPolicy
         actorGroup == requestGroup && string.IsNullOrWhiteSpace(assigneeId) && status is not MaintenanceStatus.Completed and not MaintenanceStatus.Rejected;
 }
 
-public sealed record NotificationRecipient(string Id, string Name);
+public sealed record NotificationRecipient(string Id, string Name, ExecutorGroup Group, string District);
 
 public static class RequestNotificationPolicy
 {
     private static readonly NotificationRecipient[] Technicians =
     [
-        new("tech-ivanov", "Илья Сергеевич Иванов"),
-        new("tech-petrova", "Мария Андреевна Петрова"),
-        new("tech-sokolov", "Алексей Дмитриевич Соколов")
+        new("tech-ivanov", "Илья Сергеевич Иванов", ExecutorGroup.Technician, "САО"),
+        new("tech-petrova", "Мария Андреевна Петрова", ExecutorGroup.Technician, "САО"),
+        new("tech-sokolov", "Алексей Дмитриевич Соколов", ExecutorGroup.Technician, "ЦАО"),
+        new("tech-sokolov", "Алексей Дмитриевич Соколов", ExecutorGroup.Technician, "ЮАО")
     ];
 
     private static readonly NotificationRecipient[] ResponseTeam =
     [
-        new("response-orlova", "Наталья Викторовна Орлова"),
-        new("response-volkov", "Сергей Павлович Волков")
+        new("response-orlova", "Наталья Викторовна Орлова", ExecutorGroup.ResponseTeam, "ЮАО"),
+        new("response-volkov", "Сергей Павлович Волков", ExecutorGroup.ResponseTeam, "ЮАО")
     ];
 
-    public static IReadOnlyList<NotificationRecipient> Recipients(ExecutorGroup group) =>
-        group == ExecutorGroup.Technician ? Technicians : ResponseTeam;
+    public static IReadOnlyList<NotificationRecipient> Recipients(AlertLevel level, string district)
+    {
+        if (level is not AlertLevel.Red and not AlertLevel.Black) return [];
+        var technicians = Technicians.Where(recipient => recipient.District == district);
+        return level == AlertLevel.Black
+            ? technicians.Concat(ResponseTeam.Where(recipient => recipient.District == district)).DistinctBy(recipient => recipient.Id).ToArray()
+            : technicians.ToArray();
+    }
 }
 
 public enum ClaimRequestResult { Claimed, AlreadyAssigned, NotFound }
@@ -51,15 +58,13 @@ public static class ExecutorActionPolicy
         action != ExecutorRequestAction.Cancel || !string.IsNullOrWhiteSpace(comment);
 }
 
-public enum MaintenanceStatus { New, UnderReview, Scheduled, InProgress, Completed, Rejected }
+public enum MaintenanceStatus { New, InProgress, Completed, Rejected }
 
 public static class MaintenanceWorkflow
 {
     public static bool CanTransition(MaintenanceStatus from, MaintenanceStatus to) => from switch
     {
-        MaintenanceStatus.New => to is MaintenanceStatus.UnderReview or MaintenanceStatus.Rejected,
-        MaintenanceStatus.UnderReview => to is MaintenanceStatus.Scheduled or MaintenanceStatus.Rejected,
-        MaintenanceStatus.Scheduled => to is MaintenanceStatus.InProgress or MaintenanceStatus.Rejected,
+        MaintenanceStatus.New => to is MaintenanceStatus.InProgress or MaintenanceStatus.Rejected,
         MaintenanceStatus.InProgress => to is MaintenanceStatus.Completed or MaintenanceStatus.Rejected,
         _ => false
     };

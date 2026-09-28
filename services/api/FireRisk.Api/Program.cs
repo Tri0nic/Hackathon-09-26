@@ -57,7 +57,7 @@ app.MapPost("/api/alerts/{id:guid}/decision", async (Guid id, DecisionRequest re
 app.MapPost("/api/alerts/{id:guid}/requests", async (Guid id, CreateMaintenanceRequest request, PgStore store, CancellationToken ct) =>
 {
     if (string.IsNullOrWhiteSpace(request.Description)) return Results.BadRequest(new { error = "description is required" });
-    try { return Results.Created("/api/requests", new { id = await store.AddRequestAsync(id, request, ct) }); }
+    try { return Results.Created("/api/requests", await store.AddRequestAsync(id, request, ct)); }
     catch (KeyNotFoundException) { return Results.NotFound(); }
     catch (InvalidOperationException exception) { return Results.BadRequest(new { error = exception.Message }); }
 });

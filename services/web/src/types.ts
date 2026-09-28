@@ -1,6 +1,6 @@
 export type RiskLevel = "black" | "red" | "yellow" | "green";
-export type AlertKind = "fire" | "malfunction";
-export type RequestStatus = "new" | "under_review" | "scheduled" | "in_progress" | "completed" | "rejected";
+export type AlertKind = "fire";
+export type RequestStatus = "new" | "in_progress" | "completed" | "rejected";
 export type SmsDeliveryStatus = "delivered" | "failed";
 export type SmsProcessingStatus = "undelivered" | "new" | "in_progress" | "completed" | "cancelled";
 export type UserRole = "technician" | "district_dispatcher" | "ods_dispatcher" | "response_team";
@@ -21,6 +21,8 @@ export interface Employee {
   id: string;
   name: string;
   group: ExecutorGroup;
+  districts: string[];
+  objectIds: string[];
 }
 
 export interface CreateRequestInput {
@@ -92,6 +94,7 @@ export interface Alert {
 
 export interface MaintenanceRequest {
   id: string;
+  publicId: string;
   alertId: string;
   objectId: string;
   objectName: string;

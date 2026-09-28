@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Security.Cryptography;
 using FireRisk.Api.Domain;
 using Npgsql;
 
@@ -142,24 +143,36 @@ public sealed class PgStore(NpgsqlDataSource dataSource)
         return id;
     }
 
-    public async Task<Guid> AddRequestAsync(Guid alertId, CreateMaintenanceRequest request, CancellationToken ct)
+    public async Task<CreatedMaintenanceRequest> AddRequestAsync(Guid alertId, CreateMaintenanceRequest request, CancellationToken ct)
     {
         if (!RequestPolicy.CanCreate(request.CreatorRole, request.ExecutorGroup, request.Priority))
             throw new InvalidOperationException("This dispatcher cannot create the requested assignment");
         var id = Guid.NewGuid();
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
+        string level;
+        string district;
+        await using (var context = new NpgsqlCommand("select a.level, o.district from risk_alerts a join infrastructure_objects o on o.id=a.object_id where a.id=@alertId", connection, transaction))
+        {
+            context.Parameters.AddWithValue("alertId", alertId);
+            await using var reader = await context.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct)) throw new KeyNotFoundException("Alert not found");
+            level = reader.GetString(0);
+            district = reader.GetString(1);
+        }
+        var publicId = await NextPublicRequestIdAsync(connection, transaction, ct);
         await using var command = new NpgsqlCommand("""
-            insert into maintenance_requests(id, alert_id, object_id, picket, factors, recommendation,
+            insert into maintenance_requests(id, public_id, alert_id, object_id, picket, factors, recommendation,
               request_kind, executor_group, priority, description, due_at, comment, creator_role,
               status, created_at, updated_at)
-            select @id, a.id, a.object_id,
+            select @id, @publicId, a.id, a.object_id,
               (select min(picket_raw) from data_channels where object_id=a.object_id and picket_sort_key is not null),
               a.factors, coalesce(@recommendation, a.recommendation), @kind, @executor, @priority,
               @description, @dueAt, @comment, @creator, 'new', now(), now()
             from risk_alerts a where a.id=@alertId
             """, connection, transaction);
         command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("publicId", publicId);
         command.Parameters.AddWithValue("alertId", alertId);
         command.Parameters.AddWithValue("recommendation", (object?)request.Recommendation ?? DBNull.Value);
         command.Parameters.AddWithValue("kind", EnumName(request.RequestKind));
@@ -171,7 +184,7 @@ public sealed class PgStore(NpgsqlDataSource dataSource)
         command.Parameters.AddWithValue("creator", EnumName(request.CreatorRole));
         if (await command.ExecuteNonQueryAsync(ct) == 0) throw new KeyNotFoundException("Alert not found");
 
-        foreach (var recipient in RequestNotificationPolicy.Recipients(request.ExecutorGroup))
+        foreach (var recipient in RequestNotificationPolicy.Recipients(Enum.Parse<AlertLevel>(level, true), district))
         {
             await using var sms = new NpgsqlCommand("""
                 insert into sms_notifications(id, episode_id, alert_level, recipient_id, recipient_name, role,
@@ -183,19 +196,19 @@ public sealed class PgStore(NpgsqlDataSource dataSource)
             sms.Parameters.AddWithValue("smsId", Guid.NewGuid());
             sms.Parameters.AddWithValue("recipientId", recipient.Id);
             sms.Parameters.AddWithValue("recipientName", recipient.Name);
-            sms.Parameters.AddWithValue("role", request.ExecutorGroup == ExecutorGroup.Technician ? "Technician" : "ResponseTeam");
+            sms.Parameters.AddWithValue("role", recipient.Group == ExecutorGroup.Technician ? "Technician" : "ResponseTeam");
             sms.Parameters.AddWithValue("requestId", id);
             sms.Parameters.AddWithValue("alertId", alertId);
             sms.Parameters.AddWithValue("content", $"Создана заявка: {request.Description.Trim()}");
             await sms.ExecuteNonQueryAsync(ct);
         }
         await transaction.CommitAsync(ct);
-        return id;
+        return new CreatedMaintenanceRequest(id, publicId);
     }
 
     public Task<JsonElement> GetRequestsAsync(CancellationToken ct) => JsonAsync("""
         select coalesce(json_agg(row_to_json(x) order by x."createdAt" desc), '[]'::json)::text from (
-          select r.id, r.alert_id "alertId", r.object_id "objectId", o.name "objectName", r.picket,
+          select r.id, r.public_id "publicId", r.alert_id "alertId", r.object_id "objectId", o.name "objectName", r.picket,
             r.factors, r.recommendation, r.request_kind "requestKind", r.executor_group "executorGroup",
             r.priority, r.description, r.due_at "dueAt", r.comment, r.creator_role "creatorRole",
             r.assignee_id "assigneeId", r.assignee_name "assigneeName",
@@ -341,7 +354,6 @@ public sealed class PgStore(NpgsqlDataSource dataSource)
         select coalesce(json_agg(row_to_json(x) order by x."sentAt" desc), '[]'::json)::text from (
           select s.id, s.episode_id "episodeId",
             case
-              when a.alert_kind = 'malfunction' then 'Технический сбой · ' || coalesce(o.name, 'Объект не указан')
               when s.alert_level = 'black' then 'Критическое событие · ' || coalesce(o.name, 'Объект не указан')
               else 'Пожарный риск · ' || coalesce(o.name, 'Объект не указан')
             end "episodeTitle",
@@ -368,6 +380,7 @@ public sealed class PgStore(NpgsqlDataSource dataSource)
           left join risk_alerts a on a.episode_id = s.episode_id and a.current
           left join infrastructure_objects o on o.id = a.object_id
           left join maintenance_requests r on r.id = s.request_id
+          where s.role in ('Technician', 'ResponseTeam')
         ) x
         """, ct);
 
@@ -507,18 +520,29 @@ public sealed class PgStore(NpgsqlDataSource dataSource)
 
     private static string StatusName(MaintenanceStatus status) => status switch
     {
-        MaintenanceStatus.UnderReview => "under_review",
         MaintenanceStatus.InProgress => "in_progress",
         _ => status.ToString().ToLowerInvariant()
     };
 
     private static MaintenanceStatus ParseStatus(string value) => value switch
     {
-        "under_review" => MaintenanceStatus.UnderReview,
+        "under_review" or "scheduled" => MaintenanceStatus.InProgress,
         "in_progress" => MaintenanceStatus.InProgress,
         _ => Enum.Parse<MaintenanceStatus>(value, true)
     };
 
     private static string EnumName<T>(T value) where T : struct, Enum =>
         string.Concat(value.ToString().Select((character, index) => index > 0 && char.IsUpper(character) ? $"_{char.ToLowerInvariant(character)}" : char.ToLowerInvariant(character).ToString()));
+
+    private static async Task<string> NextPublicRequestIdAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            var candidate = RandomNumberGenerator.GetInt32(0, 100000).ToString("D5");
+            await using var command = new NpgsqlCommand("select not exists(select 1 from maintenance_requests where public_id=@publicId)", connection, transaction);
+            command.Parameters.AddWithValue("publicId", candidate);
+            if (Convert.ToBoolean(await command.ExecuteScalarAsync(ct))) return candidate;
+        }
+        throw new InvalidOperationException("Could not allocate a public request id");
+    }
 }

@@ -1,17 +1,51 @@
-import type { AlertKind, Channel, Employee, ExecutorGroup, RequestPriority, RiskLevel, SmsDeliveryStatus, SmsProcessingStatus, UserRole } from "./types";
+import type { AlertKind, Channel, Employee, ExecutorGroup, RequestPriority, RiskLevel, RiskObject, SmsDeliveryStatus, SmsProcessingStatus, UserRole } from "./types";
 
 export const employees: Employee[] = [
-  { id: "tech-ivanov", name: "Илья Сергеевич Иванов", group: "technician" },
-  { id: "tech-petrova", name: "Мария Андреевна Петрова", group: "technician" },
-  { id: "tech-sokolov", name: "Алексей Дмитриевич Соколов", group: "technician" },
-  { id: "response-orlova", name: "Наталья Викторовна Орлова", group: "response_team" },
-  { id: "response-volkov", name: "Сергей Павлович Волков", group: "response_team" }
+  { id: "tech-ivanov", name: "Илья Сергеевич Иванов", group: "technician", districts: ["САО"], objectIds: ["demo-object-1"] },
+  { id: "tech-petrova", name: "Мария Андреевна Петрова", group: "technician", districts: ["САО"], objectIds: ["demo-object-1"] },
+  { id: "tech-sokolov", name: "Алексей Дмитриевич Соколов", group: "technician", districts: ["ЦАО", "ЮАО"], objectIds: ["demo-object-3", "demo-object-4"] },
+  { id: "response-orlova", name: "Наталья Викторовна Орлова", group: "response_team", districts: ["ЮАО"], objectIds: ["demo-object-4"] },
+  { id: "response-volkov", name: "Сергей Павлович Волков", group: "response_team", districts: ["ЮАО"], objectIds: ["demo-object-4"] }
 ];
 
+const dispatcherProfiles = {
+  district_dispatcher: { name: "Елена Викторовна Смирнова", districts: ["САО"] },
+  ods_dispatcher: { name: "Александр Михайлович Кузнецов", districts: undefined }
+} as const;
+
+export function profileFor(role: UserRole, employee: Employee | undefined, objects: RiskObject[]) {
+  if (employee) {
+    return { name: employee.name, role, districts: employee.districts, objects: objects.filter((item) => employee.objectIds.includes(item.id)) };
+  }
+  const dispatcher = dispatcherProfiles[role as keyof typeof dispatcherProfiles];
+  const districts = dispatcher?.districts ? [...dispatcher.districts] : [...new Set(objects.map((item) => item.district))];
+  return { name: dispatcher?.name ?? "Сотрудник", role, districts, objects: objects.filter((item) => districts.includes(item.district)) };
+}
+
+export function visibleObjectsFor(role: UserRole, employee: Employee | undefined, objects: RiskObject[]): RiskObject[] {
+  return profileFor(role, employee, objects).objects;
+}
+
+export function smsRecipientsForAlert(level: RiskLevel, district: string): Employee[] {
+  if (level !== "red" && level !== "black") return [];
+  return employees.filter((employee) => employee.districts.includes(district) && (employee.group === "technician" || level === "black"));
+}
+
+export function createPublicRequestId(existing: string[], random: () => number = Math.random): string {
+  const used = new Set(existing);
+  let candidate = Math.floor(random() * 100000) % 100000;
+  for (let attempt = 0; attempt < 100000; attempt += 1) {
+    const value = candidate.toString().padStart(5, "0");
+    if (!used.has(value)) return value;
+    candidate = (candidate + 1) % 100000;
+  }
+  throw new Error("Свободные номера заявок закончились");
+}
+
 export function allowedNavigation(role: UserRole): string[] {
-  if (role === "ods_dispatcher") return ["/", "/objects", "/alerts", "/requests", "/analytics", "/sms"];
-  if (role === "district_dispatcher") return ["/", "/objects", "/alerts", "/requests", "/sms"];
-  return ["/requests", "/objects"];
+  if (role === "ods_dispatcher") return ["/", "/objects", "/alerts", "/requests", "/analytics", "/sms", "/profile"];
+  if (role === "district_dispatcher") return ["/", "/objects", "/alerts", "/requests", "/sms", "/profile"];
+  return ["/requests", "/objects", "/profile"];
 }
 
 export function canCreateRequest(role: UserRole, executor: ExecutorGroup, priority: RequestPriority): boolean {
@@ -32,7 +66,8 @@ export function riskLabel(level: RiskLevel): string {
 }
 
 export function alertKindLabel(kind: AlertKind): string {
-  return kind === "malfunction" ? "Технический сбой" : "Пожарный риск";
+  void kind;
+  return "Пожарный риск";
 }
 
 export function splitPickets(channels: Channel[]): { located: Channel[]; withoutPicket: Channel[] } {
@@ -61,11 +96,9 @@ export const levelName: Record<RiskLevel, string> = {
 
 export const requestStatusName = {
   new: "Новая",
-  under_review: "На рассмотрении",
-  scheduled: "Запланирована",
   in_progress: "В работе",
   completed: "Выполнена",
-  rejected: "Отменена"
+  rejected: "Отклонена"
 } as const;
 
 const smsRoleName: Record<string, string> = {
