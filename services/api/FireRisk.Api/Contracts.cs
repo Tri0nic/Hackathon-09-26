@@ -27,6 +27,8 @@ public sealed record ModelDemoPredictionResponse(
     Guid CalculationId,
     ModelDemoScenarioSummary Scenario,
     MlPrediction Prediction);
+public sealed record ModelDemoPublicationRequest(Guid CalculationId);
+public sealed record ModelDemoPublicationResponse(Guid AlertId);
 
 public sealed record MlFactor(string Horizon, string Feature, double Value, double Contribution);
 

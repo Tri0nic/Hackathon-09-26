@@ -1,10 +1,12 @@
 create table if not exists infrastructure_objects (
     id text primary key,
     name text not null,
-    district text not null default 'Не указан'
+    district text not null default 'Не указан',
+    is_demo boolean not null default false
 );
 
 alter table infrastructure_objects add column if not exists district text not null default 'Не указан';
+alter table infrastructure_objects add column if not exists is_demo boolean not null default false;
 
 create table if not exists data_channels (
     id text primary key,
@@ -18,12 +20,14 @@ create table if not exists data_channels (
     device_age_years double precision,
     age_source text not null default 'generated_demo',
     maintenance_note text,
-    metadata_source text not null default 'demo'
+    metadata_source text not null default 'demo',
+    is_demo boolean not null default false
 );
 
 alter table data_channels add column if not exists display_value text;
 alter table data_channels add column if not exists display_state text not null default 'normal';
 alter table data_channels add column if not exists age_source text not null default 'generated_demo';
+alter table data_channels add column if not exists is_demo boolean not null default false;
 
 create table if not exists risk_alerts (
     id uuid primary key,
@@ -43,11 +47,17 @@ create table if not exists risk_alerts (
     recommendation text not null,
     alert_kind text not null default 'fire',
     context text not null default 'Данные не предоставлены',
-    current boolean not null default true
+    current boolean not null default true,
+    is_demo boolean not null default false,
+    demo_calculation_id uuid
 );
 
 alter table risk_alerts add column if not exists alert_kind text not null default 'fire';
 alter table risk_alerts add column if not exists context text not null default 'Данные не предоставлены';
+alter table risk_alerts add column if not exists is_demo boolean not null default false;
+alter table risk_alerts add column if not exists demo_calculation_id uuid;
+create unique index if not exists ux_risk_alerts_demo_calculation
+    on risk_alerts(demo_calculation_id) where demo_calculation_id is not null;
 
 create table if not exists risk_predictions (
     id uuid primary key,
@@ -58,8 +68,15 @@ create table if not exists risk_predictions (
     p_6h double precision not null,
     p_12h double precision not null,
     p_24h double precision not null,
-    factors jsonb not null default '[]'::jsonb
+    factors jsonb not null default '[]'::jsonb,
+    is_demo boolean not null default false,
+    demo_calculation_id uuid
 );
+
+alter table risk_predictions add column if not exists is_demo boolean not null default false;
+alter table risk_predictions add column if not exists demo_calculation_id uuid;
+create unique index if not exists ux_risk_predictions_demo_calculation
+    on risk_predictions(demo_calculation_id) where demo_calculation_id is not null;
 
 create index if not exists ix_predictions_object_time
     on risk_predictions(object_id, calculated_at desc);

@@ -10,7 +10,7 @@ public sealed class ModelDemoCalculationTests
         var gateway = new FakeGateway(Prediction());
         var clock = new FakeTimeProvider(new DateTimeOffset(2026, 9, 29, 9, 0, 0, TimeSpan.Zero));
         var cache = new ModelDemoCalculationCache(new MemoryCache(new MemoryCacheOptions()), clock);
-        var service = new ModelDemoService(Catalog(), gateway, cache);
+        var service = new ModelDemoService(Catalog(), gateway, cache, new UnusedPublicationStore());
 
         var response = await service.PredictAsync("held-out-01", CancellationToken.None);
 
@@ -26,7 +26,7 @@ public sealed class ModelDemoCalculationTests
     public async Task Listing_and_unknown_ids_do_not_call_inference()
     {
         var gateway = new FakeGateway(Prediction());
-        var service = new ModelDemoService(Catalog(), gateway, Cache());
+        var service = new ModelDemoService(Catalog(), gateway, Cache(), new UnusedPublicationStore());
 
         Assert.Equal(24, service.List().Count);
         await Assert.ThrowsAsync<KeyNotFoundException>(() => service.PredictAsync("missing", CancellationToken.None));
@@ -38,7 +38,7 @@ public sealed class ModelDemoCalculationTests
     {
         var gateway = new FakeGateway(new HttpRequestException("offline"));
         var cache = Cache();
-        var service = new ModelDemoService(Catalog(), gateway, cache);
+        var service = new ModelDemoService(Catalog(), gateway, cache, new UnusedPublicationStore());
 
         await Assert.ThrowsAsync<HttpRequestException>(() => service.PredictAsync("held-out-01", CancellationToken.None));
 
@@ -103,5 +103,12 @@ public sealed class ModelDemoCalculationTests
         private DateTimeOffset current = now;
         public override DateTimeOffset GetUtcNow() => current;
         public void Advance(TimeSpan amount) => current += amount;
+    }
+
+    private sealed class UnusedPublicationStore : IModelDemoPublicationStore
+    {
+        public Task<Guid> PublishAsync(Guid calculationId, ModelDemoScenario scenario, MlPrediction prediction, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("not used");
+        public Task DeleteResultsAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }

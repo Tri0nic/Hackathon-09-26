@@ -1,11 +1,18 @@
 using System.Text.Json;
 using System.Security.Cryptography;
+using System.Globalization;
 using FireRisk.Api.Domain;
 using Npgsql;
 
 namespace FireRisk.Api;
 
-public sealed class PgStore(NpgsqlDataSource dataSource)
+public interface IModelDemoPublicationStore
+{
+    Task<Guid> PublishAsync(Guid calculationId, ModelDemoScenario scenario, MlPrediction prediction, CancellationToken cancellationToken);
+    Task DeleteResultsAsync(CancellationToken cancellationToken);
+}
+
+public sealed class PgStore(NpgsqlDataSource dataSource) : IModelDemoPublicationStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -81,7 +88,7 @@ public sealed class PgStore(NpgsqlDataSource dataSource)
           select a.id, a.episode_id "episodeId", a.object_id "objectId", o.name "objectName",
             a.alert_kind kind, a.level, a.horizon, a.probability,
             a.p_now "pNow", a.p_6h "p6h", a.p_12h "p12h", a.p_24h "p24h",
-            a.calculated_at "calculatedAt", a.model_version "modelVersion", a.stale, a.current,
+            a.calculated_at "calculatedAt", a.model_version "modelVersion", a.stale, a.current, a.is_demo "isDemo",
             (select min(c.picket_sort_key) from data_channels c where c.object_id=a.object_id) "picketFrom",
             (select max(c.picket_sort_key) from data_channels c where c.object_id=a.object_id) "picketTo",
             a.factors, a.recommendation, a.context,
@@ -107,7 +114,7 @@ public sealed class PgStore(NpgsqlDataSource dataSource)
           'id', a.id, 'episodeId', a.episode_id, 'objectId', a.object_id, 'objectName', o.name,
           'level', a.level, 'horizon', a.horizon, 'probability', a.probability,
           'pNow', a.p_now, 'p6h', a.p_6h, 'p12h', a.p_12h, 'p24h', a.p_24h,
-          'calculatedAt', a.calculated_at, 'modelVersion', a.model_version, 'stale', a.stale,
+          'calculatedAt', a.calculated_at, 'modelVersion', a.model_version, 'stale', a.stale, 'isDemo', a.is_demo,
           'kind', a.alert_kind, 'factors', a.factors, 'recommendation', a.recommendation, 'context', a.context,
           'picketFrom', (select min(picket_sort_key) from data_channels where object_id=a.object_id),
           'picketTo', (select max(picket_sort_key) from data_channels where object_id=a.object_id),
@@ -487,6 +494,143 @@ public sealed class PgStore(NpgsqlDataSource dataSource)
         return alertId;
     }
 
+    public async Task<Guid> PublishAsync(
+        Guid calculationId,
+        ModelDemoScenario scenario,
+        MlPrediction prediction,
+        CancellationToken cancellationToken)
+    {
+        var risk = SelectRisk(prediction) ?? throw new InvalidOperationException("prediction threshold was not exceeded");
+        var objectId = $"model-demo-{scenario.Id}";
+        try
+        {
+            await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+            await using (var existing = new NpgsqlCommand(
+                "select id from risk_alerts where demo_calculation_id=@calculationId", connection, transaction))
+            {
+                existing.Parameters.AddWithValue("calculationId", calculationId);
+                var value = await existing.ExecuteScalarAsync(cancellationToken);
+                if (value is Guid existingId)
+                {
+                    await transaction.CommitAsync(cancellationToken);
+                    return existingId;
+                }
+            }
+
+            await using (var upsertObject = new NpgsqlCommand("""
+                insert into infrastructure_objects(id,name,district,is_demo)
+                values(@id,@name,@district,true)
+                on conflict(id) do update set name=excluded.name,district=excluded.district
+                where infrastructure_objects.is_demo
+                """, connection, transaction))
+            {
+                upsertObject.Parameters.AddWithValue("id", objectId);
+                upsertObject.Parameters.AddWithValue("name", scenario.ObjectName);
+                upsertObject.Parameters.AddWithValue("district", scenario.District);
+                await upsertObject.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            foreach (var sensor in scenario.Sensors)
+            {
+                await using var channel = new NpgsqlCommand("""
+                    insert into data_channels(id,object_id,sensor_type,name,picket_raw,picket_sort_key,
+                      display_value,display_state,age_source,metadata_source,is_demo)
+                    values(@id,@objectId,@type,@name,@picket,@sort,@value,@state,'imported','model_demo',true)
+                    on conflict(id) do update set sensor_type=excluded.sensor_type,name=excluded.name,
+                      picket_raw=excluded.picket_raw,picket_sort_key=excluded.picket_sort_key,
+                      display_value=excluded.display_value,display_state=excluded.display_state
+                    where data_channels.is_demo
+                    """, connection, transaction);
+                channel.Parameters.AddWithValue("id", $"model-demo-{scenario.Id}-{sensor.Id}");
+                channel.Parameters.AddWithValue("objectId", objectId);
+                channel.Parameters.AddWithValue("type", sensor.SensorType);
+                channel.Parameters.AddWithValue("name", sensor.Name);
+                channel.Parameters.AddWithValue("picket", (object?)sensor.Picket ?? DBNull.Value);
+                channel.Parameters.AddWithValue("sort", (object?)ParsePicket(sensor.Picket) ?? DBNull.Value);
+                channel.Parameters.AddWithValue("value", sensor.Value);
+                channel.Parameters.AddWithValue("state", sensor.State);
+                await channel.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            var factors = JsonSerializer.Serialize(prediction.Factors, JsonOptions);
+            await using (var insertPrediction = new NpgsqlCommand("""
+                insert into risk_predictions(id,object_id,model_version,calculated_at,p_now,p_6h,p_12h,p_24h,
+                  factors,is_demo,demo_calculation_id)
+                values(@id,@objectId,@model,@at,@pNow,@p6,@p12,@p24,@factors::jsonb,true,@calculationId)
+                """, connection, transaction))
+            {
+                insertPrediction.Parameters.AddWithValue("id", Guid.NewGuid());
+                AddDemoPredictionParameters(insertPrediction, calculationId, objectId, prediction, factors);
+                await insertPrediction.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using (var supersede = new NpgsqlCommand(
+                "update risk_alerts set current=false where object_id=@objectId and is_demo and current", connection, transaction))
+            {
+                supersede.Parameters.AddWithValue("objectId", objectId);
+                await supersede.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            var alertId = Guid.NewGuid();
+            var episodeId = $"DEMO-{calculationId:N}";
+            await using (var insertAlert = new NpgsqlCommand("""
+                insert into risk_alerts(id,episode_id,object_id,level,horizon,probability,p_now,p_6h,p_12h,p_24h,
+                  calculated_at,model_version,stale,factors,recommendation,alert_kind,context,current,is_demo,demo_calculation_id)
+                values(@id,@episode,@objectId,@level,@horizon,@prob,@pNow,@p6,@p12,@p24,@at,@model,false,
+                  @factors::jsonb,'Проверить показания датчиков и состояние объекта','fire',@context,true,true,@calculationId)
+                """, connection, transaction))
+            {
+                AddAlertParameters(insertAlert, alertId, episodeId, objectId, risk, prediction, factors);
+                insertAlert.Parameters.AddWithValue("calculationId", calculationId);
+                insertAlert.Parameters.AddWithValue("context", $"Отложенный срез {scenario.SourceTimestamp:dd.MM.yyyy HH:mm}; исходный объект {scenario.ObjectId}; {scenario.DangerousSection}");
+                await insertAlert.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using (var history = new NpgsqlCommand(
+                "insert into alert_level_history(alert_id,from_level,to_level,changed_at) values(@id,null,@to,@at)", connection, transaction))
+            {
+                history.Parameters.AddWithValue("id", alertId);
+                history.Parameters.AddWithValue("to", risk.Level);
+                history.Parameters.AddWithValue("at", prediction.CalculatedAt);
+                await history.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return alertId;
+        }
+        catch (PostgresException exception) when (exception.SqlState == PostgresErrorCodes.UniqueViolation)
+        {
+            await using var command = dataSource.CreateCommand(
+                "select id from risk_alerts where demo_calculation_id=@calculationId");
+            command.Parameters.AddWithValue("calculationId", calculationId);
+            if (await command.ExecuteScalarAsync(cancellationToken) is Guid existingId) return existingId;
+            throw;
+        }
+    }
+
+    public async Task DeleteResultsAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            delete from sms_notifications where request_id in (
+              select r.id from maintenance_requests r join risk_alerts a on a.id=r.alert_id where a.is_demo);
+            delete from request_comments where request_id in (
+              select r.id from maintenance_requests r join risk_alerts a on a.id=r.alert_id where a.is_demo);
+            delete from maintenance_requests where alert_id in (select id from risk_alerts where is_demo);
+            delete from dispatcher_decisions where alert_id in (select id from risk_alerts where is_demo);
+            delete from alert_level_history where alert_id in (select id from risk_alerts where is_demo);
+            delete from risk_alerts where is_demo;
+            delete from risk_predictions where is_demo;
+            delete from data_channels where is_demo;
+            delete from infrastructure_objects where is_demo;
+            """, connection, transaction);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
     private static (string Level, string Horizon, double Probability)? SelectRisk(MlPrediction p)
     {
         bool Decision(string key) => p.Decisions.TryGetValue(key, out var value) && value;
@@ -495,6 +639,31 @@ public sealed class PgStore(NpgsqlDataSource dataSource)
         if (Decision("12h")) return ("yellow", "12h", p.P12h);
         if (Decision("24h")) return ("green", "24h", p.P24h);
         return null;
+    }
+
+    private static void AddDemoPredictionParameters(
+        NpgsqlCommand command,
+        Guid calculationId,
+        string objectId,
+        MlPrediction prediction,
+        string factors)
+    {
+        command.Parameters.AddWithValue("calculationId", calculationId);
+        command.Parameters.AddWithValue("objectId", objectId);
+        command.Parameters.AddWithValue("model", prediction.ModelVersion);
+        command.Parameters.AddWithValue("at", prediction.CalculatedAt);
+        command.Parameters.AddWithValue("pNow", prediction.PNow);
+        command.Parameters.AddWithValue("p6", prediction.P6h);
+        command.Parameters.AddWithValue("p12", prediction.P12h);
+        command.Parameters.AddWithValue("p24", prediction.P24h);
+        command.Parameters.AddWithValue("factors", factors);
+    }
+
+    private static double? ParsePicket(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var normalized = value.Replace("ПК", "", StringComparison.OrdinalIgnoreCase).Trim().Replace('+', '.');
+        return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out var result) ? result : null;
     }
 
     private static void AddAlertParameters(NpgsqlCommand command, Guid id, string episode, string objectId,

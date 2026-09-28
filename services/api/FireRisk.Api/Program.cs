@@ -12,6 +12,7 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("ConnectionStrings:Postgres is required");
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 builder.Services.AddSingleton<PgStore>();
+builder.Services.AddSingleton<IModelDemoPublicationStore>(serviceProvider => serviceProvider.GetRequiredService<PgStore>());
 builder.Services.AddHttpClient<IMlGateway, MlClient>(client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["Ml:BaseUrl"] ?? "http://localhost:8000");
@@ -25,7 +26,7 @@ builder.Services.AddSingleton(serviceProvider =>
     var environment = serviceProvider.GetRequiredService<IHostEnvironment>();
     return new ModelDemoScenarioCatalog(Path.Combine(environment.ContentRootPath, "Data", "model-demo-scenarios.json"));
 });
-builder.Services.AddScoped<ModelDemoService>();
+builder.Services.AddSingleton<ModelDemoService>();
 
 var app = builder.Build();
 
@@ -133,6 +134,22 @@ app.MapPost("/api/model-demo/predict", async (ModelDemoPredictionRequest request
     {
         return Results.StatusCode(503);
     }
+});
+app.MapPost("/api/model-demo/publish", async (ModelDemoPublicationRequest request, ModelDemoService service, CancellationToken ct) =>
+{
+    try { return Results.Ok(await service.PublishAsync(request.CalculationId, ct)); }
+    catch (KeyNotFoundException) { return Results.NotFound(new { error = "calculation not found or expired" }); }
+    catch (InvalidOperationException exception) { return Results.Conflict(new { error = exception.Message }); }
+    catch (NpgsqlException) { return Results.StatusCode(503); }
+});
+app.MapDelete("/api/model-demo/results", async (ModelDemoService service, CancellationToken ct) =>
+{
+    try
+    {
+        await service.ClearAsync(ct);
+        return Results.NoContent();
+    }
+    catch (NpgsqlException) { return Results.StatusCode(503); }
 });
 
 app.Run();
