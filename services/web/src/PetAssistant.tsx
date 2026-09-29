@@ -19,6 +19,10 @@ const scale = 0.625;
 const cellWidth = 192 * scale;
 const cellHeight = 208 * scale;
 
+export function scrollPetChatToBottom(container: { scrollTop: number; scrollHeight: number }) {
+  container.scrollTop = container.scrollHeight;
+}
+
 export function PetAssistant({ path }: { path: string }) {
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<PetState>("idle");
@@ -30,6 +34,7 @@ export function PetAssistant({ path }: { path: string }) {
   const reactionTimer = useRef<number | undefined>(undefined);
   const answerTimer = useRef<number | undefined>(undefined);
   const previousPath = useRef(path);
+  const messagesRef = useRef<HTMLDivElement | null>(null);
 
   const react = (next: PetState, duration = 1500) => {
     window.clearTimeout(reactionTimer.current);
@@ -55,6 +60,10 @@ export function PetAssistant({ path }: { path: string }) {
     window.clearTimeout(reactionTimer.current);
     window.clearTimeout(answerTimer.current);
   }, []);
+
+  useEffect(() => {
+    if (open && messagesRef.current) scrollPetChatToBottom(messagesRef.current);
+  }, [open, messages]);
 
   const toggle = () => {
     const next = !open;
@@ -99,7 +108,7 @@ export function PetAssistant({ path }: { path: string }) {
   return <aside className={`pet-assistant state-${state}${open ? " is-open" : ""}`} aria-label="Помощник Крот Коля">
     {open && <section className="pet-chat" aria-label="Чат с Кротом Колей">
       <header><div><strong>Крот Коля</strong><small>Локальный помощник</small></div><button type="button" aria-label="Закрыть чат" onClick={toggle}>×</button></header>
-      <div className="pet-messages" aria-live="polite">
+      <div className="pet-messages" aria-live="polite" ref={messagesRef}>
         {messages.map((message, index) => <div className={`pet-message ${message.from}`} key={`${message.from}-${index}`}>
           <p>{message.text}</p>
           {message.link && <button type="button" onClick={() => navigate(message.link!.href)}>{message.link.label} →</button>}
