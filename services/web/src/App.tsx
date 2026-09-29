@@ -8,7 +8,7 @@ import type { Alert, AppData, Employee, ExecutorGroup, ExecutorRequestAction, Ma
 
 const nav = [
   ["/", "Обзор", "▦"], ["/objects", "Объекты", "⌘"], ["/alerts", "Предупреждения", "△"],
-  ["/requests", "Заявки", "▤"], ["/analytics", "Аналитика", "⌁"], ["/sms", "Журнал SMS", "✉"]
+  ["/requests", "Заявки", "▤"], ["/sms", "Журнал SMS", "✉"]
 ] as const;
 
 const roles = [

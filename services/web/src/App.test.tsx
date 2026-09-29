@@ -124,11 +124,11 @@ test("отдельный экран SMS выглядит как письмо и 
   expect(html).toContain("Проверить участок ПК 12+50–12+90");
 });
 
-test("ОДС видит аналитику, а техник — только рабочие разделы и выбор сотрудника", () => {
+test("вкладка аналитики скрыта, а техник видит только рабочие разделы и выбор сотрудника", () => {
   const ods = renderToStaticMarkup(<App initialData={demoData} initialPath="/" initialRole="ods_dispatcher" />);
   const technician = renderToStaticMarkup(<App initialData={demoData} initialPath="/requests" initialRole="technician" />);
 
-  expect(ods).toContain("Аналитика");
+  expect(ods).not.toContain("Аналитика");
   expect(technician).not.toContain("Аналитика");
   expect(technician).not.toContain("Предупреждения");
   expect(technician).not.toContain("Журнал SMS");
