@@ -93,5 +93,3 @@ Set-Location services/web
 npm test -- --run
 npm run build
 ```
-
-Итоги проверок и покрытие критериев: [docs/validation-report.md](docs/validation-report.md).
