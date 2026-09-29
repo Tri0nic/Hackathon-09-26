@@ -38,6 +38,13 @@ test("шапка позволяет выбрать одну из четырёх 
   expect(html).toContain("Группа реагирования");
 });
 
+test("в правом нижнем углу доступен помощник Крот Коля", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/" />);
+
+  expect(html).toContain('aria-label="Открыть чат с Кротом Колей"');
+  expect(html).toContain("Крот Коля");
+});
+
 test.each(["technician", "district_dispatcher", "ods_dispatcher", "response_team"] as const)(
   "страница демонстрации доступна роли %s и ссылка расположена внизу меню",
   (role) => {
