@@ -152,8 +152,6 @@ public sealed class PgStore(NpgsqlDataSource dataSource) : IModelDemoPublication
 
     public async Task<CreatedMaintenanceRequest> AddRequestAsync(Guid alertId, CreateMaintenanceRequest request, CancellationToken ct)
     {
-        if (!RequestPolicy.CanCreate(request.CreatorRole, request.ExecutorGroup, request.Priority))
-            throw new InvalidOperationException("This dispatcher cannot create the requested assignment");
         var id = Guid.NewGuid();
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
@@ -167,6 +165,9 @@ public sealed class PgStore(NpgsqlDataSource dataSource) : IModelDemoPublication
             level = reader.GetString(0);
             district = reader.GetString(1);
         }
+        var alertLevel = Enum.Parse<AlertLevel>(level, true);
+        if (!RequestPolicy.CanCreate(request.CreatorRole, alertLevel, request.ExecutorGroup, request.Priority))
+            throw new InvalidOperationException("This dispatcher cannot create the requested assignment");
         var publicId = await NextPublicRequestIdAsync(connection, transaction, ct);
         await using var command = new NpgsqlCommand("""
             insert into maintenance_requests(id, public_id, alert_id, object_id, picket, factors, recommendation,
@@ -191,7 +192,7 @@ public sealed class PgStore(NpgsqlDataSource dataSource) : IModelDemoPublication
         command.Parameters.AddWithValue("creator", EnumName(request.CreatorRole));
         if (await command.ExecuteNonQueryAsync(ct) == 0) throw new KeyNotFoundException("Alert not found");
 
-        foreach (var recipient in RequestNotificationPolicy.Recipients(Enum.Parse<AlertLevel>(level, true), district))
+        foreach (var recipient in RequestNotificationPolicy.Recipients(alertLevel, district))
         {
             await using var sms = new NpgsqlCommand("""
                 insert into sms_notifications(id, episode_id, alert_level, recipient_id, recipient_name, role,

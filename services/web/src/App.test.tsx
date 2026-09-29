@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 import { App } from "./App";
 import { demoData } from "./demo";
+import type { ModelDemoState } from "./modelDemo";
 
 test("полная карточка предупреждения сохраняет ключевые блоки", () => {
   const html = renderToStaticMarkup(
@@ -12,7 +13,8 @@ test("полная карточка предупреждения сохраня�
   expect(html).toContain("Возраст и ТО");
   expect(html).toContain("Решение диспетчера");
   expect(html).toContain("Статусы SMS");
-  expect(html).toContain("Демонстрационный контекст");
+  expect(html).not.toContain("Демонстрационный контекст");
+  expect(html).not.toContain("Mock-источник");
 });
 
 test("карточка использует цвет фактического уровня риска", () => {
@@ -48,6 +50,24 @@ test.each(["technician", "district_dispatcher", "ods_dispatcher", "response_team
   }
 );
 
+test("районный диспетчер открывает только что переданное демонстрационное предупреждение", () => {
+  const data = structuredClone(demoData);
+  const object = { ...data.objects[0], id: "model-demo-held-out-22", name: "Демонстрационный объект другого района", district: "ЮАО" };
+  const alert = { ...data.alerts[0], id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", objectId: object.id, objectName: object.name, isDemo: true };
+  data.objects.push(object);
+  data.alerts.push(alert);
+  const modelDemoState: ModelDemoState = { scenarios: [], index: 21, requestToken: 0, alertId: alert.id };
+
+  const html = renderToStaticMarkup(<App initialData={data} initialPath={`/alerts/${alert.id}`} initialRole="district_dispatcher" initialModelDemoState={modelDemoState} />);
+  const request = renderToStaticMarkup(<App initialData={data} initialPath={`/alerts/${alert.id}/request`} initialRole="district_dispatcher" initialModelDemoState={modelDemoState} />);
+
+  expect(html).toContain(object.name);
+  expect(html).toContain(`Технический ID эпизода: ${alert.episodeId}`);
+  expect(request).toContain("Создание заявки");
+  expect(request).toContain(object.name);
+  expect(request).not.toContain("Предупреждение не найдено");
+});
+
 test("демо-предупреждение получает компактную плашку без нового столбца", () => {
   const data = structuredClone(demoData);
   data.alerts[0].isDemo = true;
@@ -71,6 +91,45 @@ test("таблица каналов не показывает источник �
   expect(html).not.toContain("<th>Источник</th>");
   expect(html).not.toContain("Demo-оценка");
   expect(html).not.toContain("По первому событию");
+});
+
+test("страница объекта не содержит подпись про относительную схему, а датчики ведут в историю", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/objects/demo-object-1" />);
+
+  expect(html).not.toContain("Относительная схема");
+  expect(html).toContain('href="/objects/demo-object-1/channels/temp-1250"');
+  expect(html).toContain('href="/objects/demo-object-1/channels/smoke-1270"');
+});
+
+test("отдельная страница датчика показывает график и историю за пять дней", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/objects/demo-object-1/channels/temp-1250" />);
+
+  expect(html).toContain("История измерений");
+  expect(html).toContain("Температура ПК 12+50");
+  expect(html).toContain("Последние 5 дней");
+  expect(html).toContain('aria-label="График истории измерений"');
+  expect(html).toContain("Дата и время");
+  expect(html).toContain("68 °C");
+  expect(html).toContain('href="/objects/demo-object-1"');
+});
+
+test("объяснение риска содержит только понятные факты без процентов вклада и полос", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath={`/alerts/${demoData.alerts[0].id}`} />);
+
+  expect(html).toContain("Температура выросла на 29 °C за сутки");
+  expect(html).toContain("Датчик дыма сработал 3 раза за 15 минут");
+  expect(html).not.toContain("+34%");
+  expect(html).not.toContain("+28%");
+  expect(html).not.toContain("factor-list");
+});
+
+test("в разделе объектов есть объект без активной тревоги", () => {
+  const safeObject = demoData.objects.find((object) => !demoData.alerts.some((alert) => alert.objectId === object.id));
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/objects" initialRole="ods_dispatcher" />);
+
+  expect(safeObject).toBeDefined();
+  expect(html).toContain(safeObject!.name);
+  expect(safeObject!.probability).toBe(0);
 });
 
 test("журнал SMS показывает объект и тип события и ведёт на отдельное сообщение", () => {
@@ -172,6 +231,17 @@ test("форма ОДС фиксирует экстренный приорите
   expect(html).toContain("Группа быстрого реагирования");
   expect(html).toContain("Экстренный");
   expect(html).not.toContain("Обычный</option>");
+});
+
+test("для жёлтой тревоги диспетчер ОДС может выбирать тип, группу и приоритет", () => {
+  const alert = demoData.alerts.find((item) => item.level === "yellow")!;
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath={`/alerts/${alert.id}/request`} initialRole="ods_dispatcher" />);
+
+  expect(html).toContain("Создание заявки");
+  expect(html).toContain('<option value="inspection">Осмотр</option>');
+  expect(html).toContain('<option value="technician"');
+  expect(html).toContain('<option value="normal"');
+  expect(html).not.toContain('<select disabled="">');
 });
 
 test("системный футер с моделью удалён", () => {
@@ -308,6 +378,19 @@ test("панель диспетчера предлагает четыре гор
   expect(html).toContain("Зелёный");
 });
 
+test("в списке сотрудников рядом с ФИО показан район без номера коллектора", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/" initialRole="technician" />);
+
+  expect(html).toContain("Илья Сергеевич Иванов — САО");
+  expect(html).not.toContain("Илья Сергеевич Иванов — Коллектор");
+});
+
+test("демонстрационная модель использует полноширинную рабочую область", () => {
+  const html = renderToStaticMarkup(<App initialData={demoData} initialPath="/model-demo" initialRole="ods_dispatcher" initialModelDemoState={{ scenarios: [], index: 0, requestToken: 0 }} />);
+
+  expect(html).toContain('class="content model-demo-content model-demo-centered"');
+});
+
 test("фильтр района доступен ОДС и скрыт у районного диспетчера", () => {
   const district = renderToStaticMarkup(<App initialData={demoData} initialPath="/" initialRole="district_dispatcher" />);
   const ods = renderToStaticMarkup(<App initialData={demoData} initialPath="/" initialRole="ods_dispatcher" />);
@@ -326,7 +409,7 @@ test("таблица заявок показывает уровень трево
   expect(html).toContain("Чёрный · Событие сейчас");
 });
 
-test("карточка предупреждения скрывает служебные адресаты, модель и mock-плашку", () => {
+test("карточка предупреждения скрывает служебные адресаты, модель и демонстрационный контекст", () => {
   const alert = demoData.alerts[0];
   const html = renderToStaticMarkup(<App initialData={demoData} initialPath={`/alerts/${alert.id}`} initialRole="district_dispatcher" />);
 
@@ -334,7 +417,7 @@ test("карточка предупреждения скрывает служе�
   expect(html).not.toContain("<dt>Модель</dt>");
   expect(html).not.toContain(alert.modelVersion);
   expect(html).not.toContain("Mock-источник");
-  expect(html).toContain(alert.context);
+  expect(html).not.toContain(alert.context);
 });
 
 test("ФИО в заявках ведут в карточку сотрудника", () => {

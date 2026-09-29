@@ -103,6 +103,7 @@ export function normalizeModelDemoScenario(row: Record<string, unknown>): ModelD
   return {
     id: text(row.id), sourceTimestamp: text(row.sourceTimestamp), objectId: text(row.objectId), objectName: text(row.objectName),
     district: text(row.district), dangerousSection: text(row.dangerousSection), sensors: list<ModelDemoScenario["sensors"][number]>(row.sensors),
+    assignedEmployees: list<Record<string, unknown>>(row.assignedEmployees).map((employee) => ({ id: text(employee.id), name: text(employee.name), role: text(employee.role) })),
     inputs: list<Record<string, unknown>>(row.inputs).map((input) => ({ label: text(input.label, "Показатель"), value: text(input.value, "Нет данных") }))
   };
 }

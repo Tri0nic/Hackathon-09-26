@@ -40,6 +40,7 @@ test("API демонстрации отделяет контекст от пол
   const scenario = normalizeModelDemoScenario({
     id: "held-out-01", sourceTimestamp: "2026-09-01T10:00:00Z", objectId: "42", objectName: "Объект 42",
     district: "САО", dangerousSection: "ПК 1+00", sensors: [],
+    assignedEmployees: [{ id: "tech-ivanov", name: "Илья Сергеевич Иванов", role: "Техник" }, { id: "response-orlova", name: "Наталья Викторовна Орлова", role: "Группа быстрого реагирования" }],
     inputs: [{ label: "Тревоги за 5 минут", value: "3" }, { label: 42, value: null }],
     features: { forbidden: 1 }, probability: .99
   });
@@ -53,6 +54,10 @@ test("API демонстрации отделяет контекст от пол
   expect(scenario.inputs).toEqual([
     { label: "Тревоги за 5 минут", value: "3" },
     { label: "Показатель", value: "Нет данных" }
+  ]);
+  expect(scenario.assignedEmployees).toEqual([
+    { id: "tech-ivanov", name: "Илья Сергеевич Иванов", role: "Техник" },
+    { id: "response-orlova", name: "Наталья Викторовна Орлова", role: "Группа быстрого реагирования" }
   ]);
   expect(calculation.prediction).toMatchObject({ pNow: .1, p6h: .2, p12h: .3, p24h: .4 });
 });

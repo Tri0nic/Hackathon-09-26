@@ -20,7 +20,7 @@ public sealed class ModelDemoCalculationCache(IMemoryCache cache, TimeProvider c
     public DemoCalculation Create(string scenarioId, MlPrediction prediction)
     {
         var calculation = new DemoCalculation(Guid.NewGuid(), scenarioId, prediction, clock.GetUtcNow() + Lifetime);
-        cache.Set(calculation.Id, calculation, calculation.ExpiresAt);
+        cache.Set(calculation.Id, calculation, Lifetime);
         ownedKeys[calculation.Id] = 0;
         return calculation;
     }
@@ -39,7 +39,7 @@ public sealed class ModelDemoCalculationCache(IMemoryCache cache, TimeProvider c
     {
         var current = Get(id);
         var updated = current with { PublishedAlertId = alertId };
-        cache.Set(id, updated, current.ExpiresAt);
+        cache.Set(id, updated, current.ExpiresAt - clock.GetUtcNow());
         return updated;
     }
 

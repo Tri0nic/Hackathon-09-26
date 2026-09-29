@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { canPublishModelDemo, initialModelDemoState, modelDemoReducer, modelDemoScenarioLabel, modelFactorInfluence, modelFactorLabel, uniqueModelFactors } from "./modelDemo";
+import { canPublishModelDemo, initialModelDemoState, modelDemoInputSummary, modelDemoPublicationPath, modelDemoReducer, modelDemoScenarioLabel, modelFactorInfluence, modelFactorLabel, uniqueModelFactors } from "./modelDemo";
 import type { ModelDemoState } from "./modelDemo";
 import type { ModelDemoCalculation, ModelDemoScenario } from "./types";
 
@@ -32,6 +32,12 @@ test("запоздалый ответ не подменяет уже перек�
 test("публикация доступна только при превышении порога", () => {
   expect(canPublishModelDemo({ now: false, "6h": false })).toBe(false);
   expect(canPublishModelDemo({ now: false, "6h": true })).toBe(true);
+});
+
+test("после передачи диспетчер открывает созданное предупреждение", () => {
+  expect(modelDemoPublicationPath("district_dispatcher", "alert-42")).toBe("/alerts/alert-42");
+  expect(modelDemoPublicationPath("ods_dispatcher", "alert-42")).toBe("/alerts/alert-42");
+  expect(modelDemoPublicationPath("technician", "alert-42")).toBeUndefined();
 });
 
 test("технические признаки получают понятные подписи", () => {
@@ -73,4 +79,19 @@ test("сценарий получает короткое название по �
   expect(modelDemoScenarioLabel([{ label: "Неисправности за 5 минут", value: "2" }])).toBe("Неисправность оборудования");
   expect(modelDemoScenarioLabel([{ label: "События за 30 минут", value: "91" }])).toBe("События оборудования");
   expect(modelDemoScenarioLabel([{ label: "Тревоги за 5 минут", value: "0" }])).toBe("Штатная работа");
+});
+
+test("шесть технических признаков сворачиваются в три понятных пояснения", () => {
+  expect(modelDemoInputSummary([
+    { label: "События за 30 минут", value: "91" },
+    { label: "Тревоги за 5 минут", value: "0" },
+    { label: "Неисправности за 5 минут", value: "0" },
+    { label: "Дым или нагрев", value: "Нет" },
+    { label: "Газовые тревоги за 5 минут", value: "0" },
+    { label: "Неактуальные каналы", value: "119" },
+  ])).toEqual([
+    { title: "Поступление данных", value: "91 событие за последние 30 минут" },
+    { title: "Тревожные признаки", value: "Не обнаружены за последние 5 минут" },
+    { title: "Качество данных", value: "119 каналов без актуальных показаний" },
+  ]);
 });

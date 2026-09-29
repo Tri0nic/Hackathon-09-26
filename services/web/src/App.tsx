@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer, useState } from "react";
 import { api } from "./api";
-import { alertKindLabel, allowedNavigation, countCriticalObjects, dashboardAlerts, dashboardDistrict, employees, formatDate, levelName, probabilityAtHorizon, profileFor, requestStatusName, riskLabel, smsDeliveryStatusName, smsProcessingStatusName, visibleObjectsFor } from "./domain";
+import { alertKindLabel, allowedNavigation, buildSensorHistory, countCriticalObjects, dashboardAlerts, dashboardDistrict, employees, formatDate, levelName, probabilityAtHorizon, profileFor, requestStatusName, riskLabel, smsDeliveryStatusName, smsProcessingStatusName, visibleObjectsFor } from "./domain";
 import { Empty, KindBadge, PageTitle, PicketMap, ProbabilityChart, RiskBadge } from "./components";
 import { ModelDemoPage } from "./ModelDemoPage";
+import { initialModelDemoState as defaultModelDemoState, modelDemoReducer } from "./modelDemo";
 import type { DashboardHorizon } from "./domain";
-import type { Alert, AppData, Employee, ExecutorGroup, ExecutorRequestAction, MaintenanceRequest, RequestKind, RequestPriority, RequestStatus, RiskLevel, RiskObject, UserRole } from "./types";
+import type { ModelDemoState } from "./modelDemo";
+import type { Alert, AppData, Channel, Employee, ExecutorGroup, ExecutorRequestAction, MaintenanceRequest, RequestKind, RequestPriority, RequestStatus, RiskLevel, RiskObject, SensorReading, UserRole } from "./types";
 
 const nav = [
   ["/", "Обзор", "▦"], ["/objects", "Объекты", "⌘"], ["/alerts", "Предупреждения", "△"],
@@ -42,6 +44,8 @@ function PersonLink({ id, name, setPath }: { id?: string; name: string; setPath:
   const person = id ? employees.find((item) => item.id === id) : undefined;
   return person ? <Link to={`/profile/${person.id}`} setPath={setPath} className="person-link">{name}</Link> : <>{name}</>;
 }
+
+const employeeOptionLabel = (employee: Employee) => `${employee.name} — ${employee.districts.join(", ")}`;
 
 const horizonNames: Record<DashboardHorizon, string> = { now: "Сейчас", "6h": "6 часов", "12h": "12 часов", "24h": "24 часа" };
 const riskLevels: RiskLevel[] = ["black", "red", "yellow", "green"];
@@ -88,14 +92,19 @@ function AlertTable({ alerts, setPath, horizon }: { alerts: Alert[]; setPath: (p
 }
 
 function ObjectsPage({ data, path, setPath }: { data: AppData; path: string; setPath: (path: string) => void }) {
-  const id = path.split("/")[2];
+  const parts = path.split("/");
+  const id = parts[2];
   const object = data.objects.find((item) => item.id === id);
   if (!object) return <><PageTitle title="Объекты" subtitle="Инфраструктурные объекты и каналы мониторинга" /><div className="object-cards">{data.objects.map((item) => <ObjectCard key={item.id} object={item} setPath={setPath} />)}</div></>;
+  if (parts[3] === "channels") {
+    const channel = object.channels.find((item) => item.id === parts[4]);
+    return channel ? <SensorPage object={object} channel={channel} setPath={setPath} /> : <><PageTitle title="Датчик не найден" subtitle={object.name} /><Link to={`/objects/${object.id}`} setPath={setPath}>← Назад к объекту</Link></>;
+  }
   const alert = data.alerts.find((item) => item.objectId === object.id);
   return <>
     <PageTitle title={object.name} subtitle={`${object.district} · ${object.channelCount} каналов`}><RiskBadge level={object.level} /></PageTitle>
-    <section className="panel"><div className="panel-head"><div><h2>Линейная карта пикетов</h2><p>Относительная схема — не географическая карта</p></div>{alert && <Link className="button primary" to={`/alerts/${alert.id}`} setPath={setPath}>Открыть предупреждение</Link>}</div><PicketMap channels={object.channels} alert={alert} /></section>
-    <section className="panel"><div className="panel-head"><div><h2>Каналы объекта</h2><p>Значения и возраст оборудования</p></div></div><ChannelTable channels={object.channels} /></section>
+    <section className="panel"><div className="panel-head"><div><h2>Линейная карта пикетов</h2></div>{alert && <Link className="button primary" to={`/alerts/${alert.id}`} setPath={setPath}>Открыть предупреждение</Link>}</div><PicketMap channels={object.channels} alert={alert} /></section>
+    <section className="panel"><div className="panel-head"><div><h2>Каналы объекта</h2><p>Значения и возраст оборудования</p></div></div><ChannelTable channels={object.channels} objectId={object.id} setPath={setPath} /></section>
   </>;
 }
 
@@ -103,8 +112,39 @@ function ObjectCard({ object, setPath }: { object: RiskObject; setPath: (path: s
   return <article className="object-card" onClick={() => go(`/objects/${object.id}`, setPath)}><div><span className="object-icon">⌘</span><RiskBadge level={object.level} /></div><h2>{object.name}</h2><p>{object.district} · {object.channelCount} каналов</p><footer><span>Максимальный риск</span><strong>{Math.round(object.probability * 100)}%</strong></footer></article>;
 }
 
-function ChannelTable({ channels }: { channels: RiskObject["channels"] }) {
-  return <div className="table-wrap"><table><thead><tr><th>Канал</th><th>Пикет</th><th>Значение</th><th>Возраст и ТО</th></tr></thead><tbody>{channels.map((channel) => <tr key={channel.id}><td><b>{channel.name}</b><small>{channel.sensorType}</small></td><td>{channel.picketRaw ?? "Без пикета"}</td><td><span className={`sensor-state ${channel.state}`}>{channel.value ?? "—"}</span></td><td>{channel.deviceAgeYears != null ? `${channel.deviceAgeYears.toFixed(1)} года` : "Нет данных"}<small>{channel.maintenanceNote}</small></td></tr>)}</tbody></table></div>;
+function ChannelTable({ channels, objectId, setPath }: { channels: RiskObject["channels"]; objectId: string; setPath: (path: string) => void }) {
+  return <div className="table-wrap"><table><thead><tr><th>Канал</th><th>Пикет</th><th>Значение</th><th>Возраст и ТО</th></tr></thead><tbody>{channels.map((channel) => <tr key={channel.id}><td><Link to={`/objects/${objectId}/channels/${channel.id}`} setPath={setPath} className="channel-link"><b>{channel.name}</b><small>{channel.sensorType}</small></Link></td><td>{channel.picketRaw ?? "Без пикета"}</td><td><span className={`sensor-state ${channel.state}`}>{channel.value ?? "—"}</span></td><td>{channel.deviceAgeYears != null ? `${channel.deviceAgeYears.toFixed(1)} года` : "Нет данных"}<small>{channel.maintenanceNote}</small></td></tr>)}</tbody></table></div>;
+}
+
+const sensorStateName = (state: SensorReading["state"] | undefined) => state === "danger" ? "Тревога" : state === "warning" ? "Требует внимания" : state === "malfunction" ? "Неисправность" : "Норма";
+
+function SensorHistoryChart({ history, state }: { history: SensorReading[]; state: Channel["state"] }) {
+  const scores = { normal: 0, warning: 1, danger: 2, malfunction: 1 } as const;
+  const values = history.map((reading) => reading.numericValue ?? scores[reading.state]);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = Math.max(max - min, 1);
+  const x = (index: number) => 36 + index * (708 / Math.max(history.length - 1, 1));
+  const y = (value: number) => 145 - ((value - min) / range) * 105;
+  const points = values.map((value, index) => `${x(index)},${y(value)}`).join(" ");
+  return <div className="sensor-history-chart"><svg viewBox="0 0 780 190" role="img" aria-label="График истории измерений">
+    {[40, 92, 145].map((line) => <line key={line} x1="36" y1={line} x2="744" y2={line} className="grid-line" />)}
+    <polyline points={points} className={`sensor-history-line ${state ?? "normal"}`} />
+    {history.map((reading, index) => index % 5 === 0 || index === history.length - 1 ? <g key={reading.measuredAt}><circle cx={x(index)} cy={y(values[index])} r="4" className={`sensor-history-point ${reading.state}`} /><text x={x(index)} y="174" textAnchor="middle">{new Date(reading.measuredAt).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })}</text></g> : null)}
+  </svg></div>;
+}
+
+function SensorPage({ object, channel, setPath }: { object: RiskObject; channel: Channel; setPath: (path: string) => void }) {
+  const history = channel.history ?? buildSensorHistory(channel);
+  return <>
+    <div className="sensor-back"><Link to={`/objects/${object.id}`} setPath={setPath}>← Назад к объекту</Link></div>
+    <PageTitle title={channel.name} subtitle={`${object.name} · ${channel.sensorType} · ${channel.picketRaw ? `ПК ${channel.picketRaw}` : "Без пикета"}`}><span className={`sensor-state ${channel.state}`}>{channel.value ?? "Нет данных"}</span></PageTitle>
+    <div className="sensor-summary">
+      <section className="panel"><h2>Текущее состояние</h2><dl className="facts"><div><dt>Статус</dt><dd>{sensorStateName(channel.state)}</dd></div><div><dt>Последнее значение</dt><dd>{channel.value ?? "Нет данных"}</dd></div><div><dt>Возраст</dt><dd>{channel.deviceAgeYears != null ? `${channel.deviceAgeYears.toFixed(1)} года` : "Нет данных"}</dd></div><div><dt>Обслуживание</dt><dd>{channel.maintenanceNote ?? "Нет данных"}</dd></div></dl></section>
+      <section className="panel"><div className="panel-head"><div><h2>История измерений</h2><p>Последние 5 дней · интервал 6 часов</p></div></div><SensorHistoryChart history={history} state={channel.state} /></section>
+    </div>
+    <section className="panel"><div className="panel-head"><div><h2>Архив показаний</h2><p>Все измерения демонстрационного периода</p></div></div><div className="table-wrap"><table><thead><tr><th>Дата и время</th><th>Значение</th><th>Состояние</th></tr></thead><tbody>{[...history].reverse().map((reading) => <tr key={reading.measuredAt}><td>{formatDate(reading.measuredAt)}</td><td><b>{reading.value}</b></td><td><span className={`sensor-state ${reading.state}`}>{sensorStateName(reading.state)}</span></td></tr>)}</tbody></table></div></section>
+  </>;
 }
 
 function AlertsPage({ data, path, setPath, onRefresh, role }: { data: AppData; path: string; setPath: (path: string) => void; onRefresh: () => Promise<void>; role: UserRole }) {
@@ -118,6 +158,7 @@ function AlertDetails({ alert, sms, requests, setPath, onRefresh, role }: { aler
   const [message, setMessage] = useState("");
   const [decision, setDecision] = useState("maintenance");
   const [comment, setComment] = useState("");
+  const informativeFactors = alert.factors.filter((factor) => factor.detail && !factor.detail.startsWith("Вклад в ")).slice(0, 3);
   const act = async () => {
     await api.addDecision(alert.id, decision, comment);
     setMessage("Решение сохранено");
@@ -130,13 +171,12 @@ function AlertDetails({ alert, sms, requests, setPath, onRefresh, role }: { aler
       <section className="panel hero-alert"><div className={`risk-score level-${alert.level}`}><strong>{Math.round(alert.probability * 100)}%</strong><span>{riskLabel(alert.level)}</span></div><div><dl className="facts"><div><dt>Рассчитано</dt><dd>{formatDate(alert.calculatedAt)}</dd></div><div><dt>Опасный участок</dt><dd>{alert.picketFrom ? `ПК ${alert.picketFrom.toFixed(2)}–${alert.picketTo?.toFixed(2)}` : "Не определён"}</dd></div></dl></div></section>
       <section className="panel"><div className="panel-head"><div><h2>Динамика вероятности</h2><p>Накопленный риск по горизонтам</p></div></div><ProbabilityChart alert={alert} /></section>
     </div>
-    <section className="panel"><div className="panel-head"><div><h2>Каналы и опасный диапазон</h2><p>Пикеты расположены в относительном масштабе</p></div></div><PicketMap channels={alert.channels} alert={alert} /></section>
-    <div className="detail-grid thirds">
-      <section className="panel"><h2>Факторы и объяснение</h2><div className="factor-list">{alert.factors.map((factor, index) => <div key={`${factor.label}-${index}`}><header><b>{factor.label}</b><strong>{factor.contribution >= 0 ? "+" : "−"}{Math.round(Math.abs(factor.contribution) * 100)}%</strong></header><p>{factor.detail}</p><i style={{ width: `${Math.min(100, Math.abs(factor.contribution) * 100)}%` }} /></div>)}</div></section>
+    <section className="panel"><div className="panel-head"><div><h2>Каналы и опасный диапазон</h2></div></div><PicketMap channels={alert.channels} alert={alert} /></section>
+    <div className="detail-grid">
+      {informativeFactors.length > 0 && <section className="panel"><h2>Факторы и объяснение</h2><ul className="insight-list">{informativeFactors.map((factor, index) => <li key={`${factor.label}-${index}`}>{factor.detail}</li>)}</ul></section>}
       <section className="panel"><h2>Рекомендация</h2><p className="recommendation">{alert.recommendation}</p>{(role === "district_dispatcher" || role === "ods_dispatcher") && <Link className="button primary" to={`/alerts/${alert.id}/request`} setPath={setPath}>Создать заявку</Link>}</section>
-      <section className="panel"><h2>Демонстрационный контекст</h2><p>{alert.context}</p></section>
     </div>
-    <section className="panel"><div className="panel-head"><div><h2>Возраст и ТО</h2><p>Числовая оценка и источник показаны отдельно</p></div></div><ChannelTable channels={alert.channels} /></section>
+    <section className="panel"><div className="panel-head"><div><h2>Возраст и ТО</h2><p>Состояние оборудования и даты обслуживания</p></div></div><ChannelTable channels={alert.channels} objectId={alert.objectId} setPath={setPath} /></section>
     <div className="detail-grid">
       <section className="panel"><h2>Решение диспетчера</h2><label className="field">Результат проверки<select value={decision} onChange={(event) => setDecision(event.target.value)}><option value="confirmed_fire">Подтверждённый пожар</option><option value="smoke_without_fire">Задымление без пожара</option><option value="false_alarm">Ложное срабатывание</option><option value="sensor_malfunction">Техническая неисправность</option><option value="maintenance">Проверка / ТО</option><option value="unknown">Недостаточно данных</option></select></label><label className="field">Комментарий<textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Необязательно" /></label><button className="primary" onClick={act}>Сохранить решение</button>{message && <span className="success-message">✓ {message}</span>}</section>
       <section className="panel"><h2>История уровня</h2><div className="timeline">{alert.history.map((item, index) => <div key={index}><i className={`level-${item.toLevel}`} /><div><b>{item.fromLevel ? `${riskLabel(item.fromLevel)} → ` : "Создано: "}{riskLabel(item.toLevel)}</b><small>{formatDate(item.changedAt)}</small></div></div>)}</div></section>
@@ -147,9 +187,10 @@ function AlertDetails({ alert, sms, requests, setPath, onRefresh, role }: { aler
 
 function RequestForm({ alert, role, setPath, onRefresh, alerts, onAlertChange, cancelTo }: { alert: Alert; role: UserRole; setPath: (path: string) => void; onRefresh: () => Promise<void>; alerts?: Alert[]; onAlertChange?: (id: string) => void; cancelTo?: string }) {
   const ods = role === "ods_dispatcher";
-  const [requestKind, setRequestKind] = useState<RequestKind>(ods ? "emergency" : "repair");
-  const [executorGroup, setExecutorGroup] = useState<ExecutorGroup>(ods ? "response_team" : "technician");
-  const [priority, setPriority] = useState<RequestPriority>(ods ? "emergency" : "normal");
+  const emergency = ods && alert.level === "black";
+  const [requestKind, setRequestKind] = useState<RequestKind>(emergency ? "emergency" : "repair");
+  const [executorGroup, setExecutorGroup] = useState<ExecutorGroup>(emergency ? "response_team" : "technician");
+  const [priority, setPriority] = useState<RequestPriority>(emergency ? "emergency" : alert.level === "red" ? "high" : "normal");
   const [description, setDescription] = useState(alert.recommendation);
   const [dueAt, setDueAt] = useState("");
   const [comment, setComment] = useState("");
@@ -161,13 +202,13 @@ function RequestForm({ alert, role, setPath, onRefresh, alerts, onAlertChange, c
     await onRefresh();
     go("/requests", setPath);
   };
-  return <><PageTitle title={ods ? "Экстренная заявка ОДС" : "Создание заявки"} subtitle={`${alert.objectName} · ${alertKindLabel(alert.kind)}`} />
+  return <><PageTitle title={emergency ? "Экстренная заявка ОДС" : "Создание заявки"} subtitle={`${alert.objectName} · ${alertKindLabel(alert.kind)}`} />
     <form className="panel request-form" onSubmit={submit}>
       <div className="form-grid">
         {alerts && <label className="field">Объект и предупреждение<select value={alert.id} onChange={(event) => onAlertChange?.(event.target.value)}>{alerts.map((item) => <option key={item.id} value={item.id}>{item.objectName}</option>)}</select></label>}
-        <label className="field">Тип заявки<select value={requestKind} disabled={ods} onChange={(e) => setRequestKind(e.target.value as RequestKind)}>{!ods && <><option value="inspection">Осмотр</option><option value="repair">Ремонт</option></>}<option value="emergency">Экстренный выезд</option></select></label>
-        <label className="field">Группа исполнителей<select value={executorGroup} disabled={ods} onChange={(e) => setExecutorGroup(e.target.value as ExecutorGroup)}><option value="technician">Техники</option><option value="response_team">Группа быстрого реагирования</option></select></label>
-        <label className="field">Приоритет<select value={priority} disabled={ods} onChange={(e) => setPriority(e.target.value as RequestPriority)}>{!ods && <><option value="normal">Обычный</option><option value="high">Высокий</option></>}<option value="emergency">Экстренный</option></select></label>
+        <label className="field">Тип заявки<select value={requestKind} disabled={emergency} onChange={(e) => setRequestKind(e.target.value as RequestKind)}>{!emergency && <><option value="inspection">Осмотр</option><option value="repair">Ремонт</option></>}<option value="emergency">Экстренный выезд</option></select></label>
+        <label className="field">Группа исполнителей<select value={executorGroup} disabled={emergency} onChange={(e) => setExecutorGroup(e.target.value as ExecutorGroup)}><option value="technician">Техники</option><option value="response_team">Группа быстрого реагирования</option></select></label>
+        <label className="field">Приоритет<select value={priority} disabled={emergency} onChange={(e) => setPriority(e.target.value as RequestPriority)}>{!emergency && <><option value="normal">Обычный</option><option value="high">Высокий</option></>}<option value="emergency">Экстренный</option></select></label>
         <label className="field">Срок выполнения<input type="datetime-local" value={dueAt} onChange={(e) => setDueAt(e.target.value)} /></label>
       </div>
       <label className="field">Описание неисправности<textarea required value={description} onChange={(e) => setDescription(e.target.value)} /></label>
@@ -312,11 +353,12 @@ function SmsDetailsPage({ data, id, setPath }: { data: AppData; id: string; setP
   </>;
 }
 
-export function App({ initialData, initialPath, initialRole }: { initialData?: AppData; initialPath?: string; initialRole?: UserRole }) {
+export function App({ initialData, initialPath, initialRole, initialModelDemoState }: { initialData?: AppData; initialPath?: string; initialRole?: UserRole; initialModelDemoState?: ModelDemoState }) {
   const [data, setData] = useState<AppData | undefined>(initialData);
   const [path, setPath] = useState(initialPath ?? (typeof window === "undefined" ? "/" : window.location.pathname));
   const [userRole, setUserRole] = useState<UserRole>(initialRole ?? savedRole);
   const [employeeId, setEmployeeId] = useState("");
+  const [modelDemoState, modelDemoDispatch] = useReducer(modelDemoReducer, initialModelDemoState ?? defaultModelDemoState);
   const role = roles.find((item) => item.value === userRole)!;
   const roleEmployees = employees.filter((item) => item.group === userRole);
   const selectedEmployee = roleEmployees.find((item) => item.id === employeeId) ?? roleEmployees[0];
@@ -341,7 +383,16 @@ export function App({ initialData, initialPath, initialRole }: { initialData?: A
   }, [path, effectivePath]);
   if (!data) return <div className="loading">Загрузка данных…</div>;
   let page: React.ReactNode;
-  const visibleObjects = visibleObjectsFor(userRole, selectedEmployee, data.objects);
+  const baseVisibleObjects = visibleObjectsFor(userRole, selectedEmployee, data.objects);
+  const publishedAlertPath = modelDemoState.alertId ? `/alerts/${modelDemoState.alertId}` : undefined;
+  const publishedAlertAccessible = publishedAlertPath && (effectivePath === publishedAlertPath || effectivePath === `${publishedAlertPath}/request`);
+  const publishedDemoAlert = modelDemoState.alertId && publishedAlertAccessible
+    ? data.alerts.find((alert) => alert.id === modelDemoState.alertId && alert.isDemo)
+    : undefined;
+  const publishedDemoObject = publishedDemoAlert ? data.objects.find((object) => object.id === publishedDemoAlert.objectId) : undefined;
+  const visibleObjects = publishedDemoObject && !baseVisibleObjects.some((object) => object.id === publishedDemoObject.id)
+    ? [...baseVisibleObjects, publishedDemoObject]
+    : baseVisibleObjects;
   const visibleObjectIds = new Set(visibleObjects.map((object) => object.id));
   const visibleEmployees = employees.filter((employee) => employee.objectIds.some((objectId) => visibleObjectIds.has(objectId)));
   const scopedData = { ...data, objects: visibleObjects, alerts: data.alerts.filter((alert) => visibleObjectIds.has(alert.objectId)), requests: data.requests.filter((request) => visibleObjectIds.has(request.objectId)), sms: data.sms.filter((item) => data.alerts.some((alert) => alert.episodeId === item.episodeId && visibleObjectIds.has(alert.objectId))) };
@@ -354,7 +405,7 @@ export function App({ initialData, initialPath, initialRole }: { initialData?: A
   else if (effectivePath.startsWith("/objects")) page = <ObjectsPage data={scopedData} path={effectivePath} setPath={setPath} />;
   else if (effectivePath.startsWith("/alerts")) page = <AlertsPage data={scopedData} path={effectivePath} setPath={setPath} onRefresh={refresh} role={userRole} />;
   else if (effectivePath === "/requests") page = <RequestsPage data={scopedData} role={userRole} employee={selectedEmployee} onRefresh={refresh} setPath={setPath} />;
-  else if (effectivePath === "/model-demo") page = <ModelDemoPage navigate={(next) => go(next, setPath)} onRefresh={refresh} role={userRole} />;
+  else if (effectivePath === "/model-demo") page = <ModelDemoPage navigate={(next) => go(next, setPath)} onRefresh={refresh} role={userRole} sharedState={modelDemoState} sharedDispatch={modelDemoDispatch} />;
   else if (effectivePath.startsWith("/profile/")) page = <EmployeeProfilePage id={effectivePath.split("/")[2]} objects={scopedData.objects} availableEmployees={visibleEmployees} />;
   else if (effectivePath === "/profile") page = <ProfilePage role={userRole} employee={selectedEmployee} objects={data.objects} />;
   else if (effectivePath === "/analytics") page = <AnalyticsPage data={scopedData} />;
@@ -362,5 +413,5 @@ export function App({ initialData, initialPath, initialRole }: { initialData?: A
   else if (effectivePath === "/sms") page = <SmsPage data={scopedData} setPath={setPath} />;
   else page = <Dashboard data={scopedData} role={userRole} setPath={setPath} />;
   const currentProfile = profileFor(userRole, selectedEmployee, data.objects);
-  return <div className="app-shell"><aside className="sidebar"><div className="brand"><span>МК</span><div><b>Москоллектор</b><small>Контроль инфраструктуры</small></div></div><nav>{visibleNav.map(([href, label, icon]) => <Link key={href} to={href} setPath={setPath} className={activeRoot === href ? "active" : ""}><span>{icon}</span>{label}</Link>)}</nav><div className="sidebar-foot"><Link to="/model-demo" setPath={setPath} className={activeRoot === "/model-demo" ? "active" : ""}><span>◇</span>Демонстрация модели</Link></div></aside><main><div className="topbar"><div><span className="pulse" />Данные обновлены 2 мин назад</div><div className="top-user"><label className="role-switch">Роль<select aria-label="Текущая роль" value={userRole} onChange={(event) => changeRole(event.target.value as UserRole)}>{roles.map((item) => <option value={item.value} key={item.value}>{item.name}</option>)}</select></label>{roleEmployees.length > 0 && <label className="role-switch">Сотрудник<select aria-label="Текущий сотрудник" value={selectedEmployee?.id} onChange={(event) => setEmployeeId(event.target.value)}>{roleEmployees.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<Link to="/profile" setPath={setPath} className="profile-link"><span className="avatar">{role.initials}</span><b>{currentProfile.name}</b></Link></div></div><div className="content">{page}</div></main></div>;
+  return <div className="app-shell"><aside className="sidebar"><div className="brand"><span>МК</span><div><b>Москоллектор</b><small>Контроль инфраструктуры</small></div></div><nav>{visibleNav.map(([href, label, icon]) => <Link key={href} to={href} setPath={setPath} className={activeRoot === href ? "active" : ""}><span>{icon}</span>{label}</Link>)}</nav><div className="sidebar-foot"><Link to="/model-demo" setPath={setPath} className={activeRoot === "/model-demo" ? "active" : ""}><span>◇</span>Демонстрация модели</Link></div></aside><main><div className="topbar"><div><span className="pulse" />Данные обновлены 2 мин назад</div><div className="top-user"><label className="role-switch">Роль<select aria-label="Текущая роль" value={userRole} onChange={(event) => changeRole(event.target.value as UserRole)}>{roles.map((item) => <option value={item.value} key={item.value}>{item.name}</option>)}</select></label>{roleEmployees.length > 0 && <label className="role-switch">Сотрудник<select aria-label="Текущий сотрудник" value={selectedEmployee?.id} onChange={(event) => setEmployeeId(event.target.value)}>{roleEmployees.map((item) => <option value={item.id} key={item.id}>{employeeOptionLabel(item)}</option>)}</select></label>}<Link to="/profile" setPath={setPath} className="profile-link"><span className="avatar">{role.initials}</span><b>{currentProfile.name}</b></Link></div></div><div className={`content${effectivePath === "/model-demo" ? " model-demo-content model-demo-centered" : ""}`}>{page}</div></main></div>;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { alertKindLabel, allowedNavigation, canClaimRequest, canCreateRequest, countCriticalObjects, createPublicRequestId, dashboardAlerts, dashboardDistrict, employees, picketPosition, probabilityAtHorizon, profileFor, riskLabel, smsRecipientsForAlert, splitPickets } from "./domain";
+import { alertKindLabel, allowedNavigation, buildSensorHistory, canClaimRequest, canCreateRequest, countCriticalObjects, createPublicRequestId, dashboardAlerts, dashboardDistrict, employees, picketPosition, probabilityAtHorizon, profileFor, riskLabel, smsRecipientsForAlert, splitPickets } from "./domain";
 import { demoData } from "./demo";
 
 describe("riskLabel", () => {
@@ -16,6 +16,16 @@ test("горизонт выбирает соответствующую веро�
   expect(probabilityAtHorizon(alert, "6h")).toBe(alert.p6h);
   expect(probabilityAtHorizon(alert, "12h")).toBe(alert.p12h);
   expect(probabilityAtHorizon(alert, "24h")).toBe(alert.p24h);
+});
+
+test("история датчика охватывает пять дней и заканчивается текущим показанием", () => {
+  const channel = demoData.objects[0].channels[0];
+
+  const history = buildSensorHistory(channel, new Date("2026-09-29T12:00:00Z"));
+
+  expect(history).toHaveLength(21);
+  expect(history[0].measuredAt).toBe("2026-09-24T12:00:00.000Z");
+  expect(history[20]).toMatchObject({ measuredAt: "2026-09-29T12:00:00.000Z", value: "68 °C", state: "danger" });
 });
 
 test("панель ОДС фильтрует предупреждения одновременно по району и уровню", () => {
@@ -59,8 +69,8 @@ test("профиль сотрудника содержит ФИО, районы 
 test("главный диспетчер относится ко всем районам и объектам", () => {
   const profile = profileFor("ods_dispatcher", undefined, demoData.objects);
 
-  expect(profile.districts).toEqual(["САО", "ВАО", "ЦАО", "ЮАО"]);
-  expect(profile.objects).toHaveLength(4);
+  expect(profile.districts).toEqual(["САО", "ВАО", "ЦАО", "ЮАО", "ЗАО"]);
+  expect(profile.objects).toHaveLength(5);
 });
 
 test("RED уведомляет районных техников, BLACK — районных техников и ГБР", () => {
@@ -104,10 +114,11 @@ test("исполнитель видит новые демонстрационн�
   expect(profileFor("technician", employees[0], objects).objects.map((item) => item.id)).toContain("model-demo-held-out-01");
 });
 
-test("ОДС создаёт только экстренную заявку для ГБР", () => {
-  expect(canCreateRequest("ods_dispatcher", "response_team", "emergency")).toBe(true);
-  expect(canCreateRequest("ods_dispatcher", "technician", "normal")).toBe(false);
-  expect(canCreateRequest("district_dispatcher", "technician", "normal")).toBe(true);
+test("ОДС ограничен экстренной заявкой для ГБР только на чёрном уровне", () => {
+  expect(canCreateRequest("ods_dispatcher", "black", "response_team", "emergency")).toBe(true);
+  expect(canCreateRequest("ods_dispatcher", "black", "technician", "normal")).toBe(false);
+  expect(canCreateRequest("ods_dispatcher", "yellow", "technician", "normal")).toBe(true);
+  expect(canCreateRequest("district_dispatcher", "black", "technician", "normal")).toBe(true);
 });
 
 test("исполнитель берёт только свободную заявку своей группы", () => {

@@ -50,7 +50,8 @@ public sealed class ModelDemoScenarioCatalogTests : IDisposable
             "Объект 42",
             "САО",
             "ПК 1+00",
-            [new ModelDemoSensor("sensor-1", "Температура", "heat", "ПК 1+00", "61 °C", "warning")],
+            [new ModelDemoSensor("sensor-1", "Температура", "heat", "ПК 1+00", "61 °C", "warning", new DateTimeOffset(2026, 9, 29, 8, 55, 0, TimeSpan.Zero))],
+            [new ModelDemoEmployee("tech-ivanov", "Илья Сергеевич Иванов", "Техник")],
             new Dictionary<string, double?>
             {
                 ["event_count_30m"] = 17,
@@ -98,7 +99,15 @@ public sealed class ModelDemoScenarioCatalogTests : IDisposable
         var catalog = new ModelDemoScenarioCatalog(path);
 
         Assert.Equal(24, catalog.List().Count);
-        Assert.All(catalog.List(), item => Assert.Equal(2026, item.SourceTimestamp.Year));
+        Assert.All(catalog.List(), item =>
+        {
+            Assert.Equal(2026, item.SourceTimestamp.Year);
+            Assert.Equal(6, item.Sensors.Count);
+            Assert.All(item.Sensors, sensor => Assert.True(sensor.LastSeenAt <= item.SourceTimestamp));
+            Assert.Equal(2, item.AssignedEmployees.Count);
+            Assert.Contains(item.AssignedEmployees, employee => employee.Role == "Техник");
+            Assert.Contains(item.AssignedEmployees, employee => employee.Role == "Группа быстрого реагирования");
+        });
     }
 
     private string WriteCatalog(bool includeMonth = true, bool includeExtra = false, int hour = 12)
@@ -121,9 +130,11 @@ public sealed class ModelDemoScenarioCatalogTests : IDisposable
                 objectName = $"Тестовый объект {index:D2}",
                 district = "САО",
                 dangerousSection = "ПК 12+50",
-                sensors = new[]
+                sensors = Enumerable.Range(1, 6).Select(sensor => new { id = $"sensor-{index:D2}-{sensor}", name = $"Датчик {sensor}", sensorType = "Температура", picket = $"12+{sensor:D2}", value = "42 °C", state = "normal", lastSeenAt = "2026-09-29T08:55:00Z" }),
+                assignedEmployees = new[]
                 {
-                    new { id = $"sensor-{index:D2}", name = "Температура", sensorType = "Температура", picket = "12+50", value = "42 °C", state = "normal" }
+                    new { id = "tech-ivanov", name = "Илья Сергеевич Иванов", role = "Техник" },
+                    new { id = "response-orlova", name = "Наталья Викторовна Орлова", role = "Группа быстрого реагирования" },
                 },
                 features,
             };

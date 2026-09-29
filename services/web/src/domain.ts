@@ -1,4 +1,4 @@
-import type { Alert, AlertKind, Channel, Employee, ExecutorGroup, RequestPriority, RiskLevel, RiskObject, SmsDeliveryStatus, SmsProcessingStatus, UserRole } from "./types";
+import type { Alert, AlertKind, Channel, Employee, ExecutorGroup, RequestPriority, RiskLevel, RiskObject, SensorReading, SmsDeliveryStatus, SmsProcessingStatus, UserRole } from "./types";
 
 export type DashboardHorizon = "now" | "6h" | "12h" | "24h";
 
@@ -50,8 +50,8 @@ export function allowedNavigation(role: UserRole): string[] {
   return ["/requests", "/objects", "/profile", "/model-demo"];
 }
 
-export function canCreateRequest(role: UserRole, executor: ExecutorGroup, priority: RequestPriority): boolean {
-  return role === "district_dispatcher" || (role === "ods_dispatcher" && executor === "response_team" && priority === "emergency");
+export function canCreateRequest(role: UserRole, level: RiskLevel, executor: ExecutorGroup, priority: RequestPriority): boolean {
+  return role === "district_dispatcher" || (role === "ods_dispatcher" && (level !== "black" || (executor === "response_team" && priority === "emergency")));
 }
 
 export function canClaimRequest(actorGroup: ExecutorGroup, requestGroup: ExecutorGroup, assigneeId: string | undefined, status: string): boolean {
@@ -104,6 +104,37 @@ export function splitPickets(channels: Channel[]): { located: Channel[]; without
     located: channels.filter((channel) => channel.picketSortKey != null).sort((a, b) => a.picketSortKey! - b.picketSortKey!),
     withoutPicket: channels.filter((channel) => channel.picketSortKey == null)
   };
+}
+
+export function buildSensorHistory(channel: Channel, end = new Date("2026-09-29T12:00:00Z")): SensorReading[] {
+  const rawValue = channel.value ?? "Нет данных";
+  const numericMatch = rawValue.replace(",", ".").match(/-?\d+(?:\.\d+)?/);
+  const current = numericMatch ? Number(numericMatch[0]) : undefined;
+  const unit = numericMatch ? rawValue.slice(numericMatch.index! + numericMatch[0].length).trim() : "";
+  const temperature = channel.sensorType.toLowerCase().includes("температур");
+  const gas = channel.sensorType.toLowerCase().includes("газ");
+  return Array.from({ length: 21 }, (_, index) => {
+    const measuredAt = new Date(end.getTime() - (20 - index) * 6 * 60 * 60 * 1000).toISOString();
+    if (current === undefined) {
+      const finalReading = index === 20;
+      return {
+        measuredAt,
+        value: finalReading ? rawValue : channel.state === "malfunction" ? "Связь стабильна" : "Норма",
+        state: finalReading ? channel.state ?? "normal" : "normal",
+      };
+    }
+    const progress = index / 20;
+    const totalRise = temperature && channel.state === "danger" ? 29 : gas ? current * .55 : Math.max(current * .08, 1);
+    const wave = index === 20 ? 0 : Math.sin(index * 1.7) * Math.max(totalRise * .04, .1);
+    const numericValue = index === 20 ? current : current - totalRise * (1 - progress) + wave;
+    const rounded = temperature ? Math.round(numericValue) : Math.round(numericValue * 100) / 100;
+    return {
+      measuredAt,
+      numericValue: rounded,
+      value: `${String(rounded).replace(".", ",")}${unit ? ` ${unit}` : ""}`,
+      state: index === 20 ? channel.state ?? "normal" : index >= 18 && channel.state !== "normal" ? "warning" : "normal",
+    };
+  });
 }
 
 export function picketPosition(value: number, keys: number[]): number {

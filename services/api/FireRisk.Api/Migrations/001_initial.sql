@@ -164,7 +164,8 @@ insert into infrastructure_objects(id, name, district) values
     ('demo-object-1', 'Коллектор №1 · участок Северный', 'САО'),
     ('demo-object-2', 'Коллектор №4 · участок Восточный', 'ВАО'),
     ('demo-object-3', 'Коллектор №7 · участок Центральный', 'ЦАО'),
-    ('demo-object-4', 'Коллектор №9 · участок Южный', 'ЮАО')
+    ('demo-object-4', 'Коллектор №9 · участок Южный', 'ЮАО'),
+    ('demo-object-5', 'Коллектор №12 · участок Западный', 'ЗАО')
 on conflict (id) do update set name=excluded.name, district=excluded.district;
 
 insert into data_channels(id, object_id, sensor_type, name, picket_raw, picket_sort_key,
@@ -175,7 +176,9 @@ insert into data_channels(id, object_id, sensor_type, name, picket_raw, picket_s
     ('demo-service-1', 'demo-object-1', 'Диагностика', 'Служебный канал без пикета', null, null, 'Нет связи', 'malfunction', 2.0, 'generated_demo', 'Данные не предоставлены', 'demo'),
     ('demo-service-2', 'demo-object-2', 'Диагностика', 'Канал связи без пикета', null, null, 'Нет связи', 'malfunction', 2.8, 'generated_demo', 'Данные не предоставлены', 'demo'),
     ('demo-temp-3', 'demo-object-3', 'Температура', 'Температура ПК 08+20', '08+20', 8.2, '31 °C', 'normal', 4.0, 'first_seen', 'ТО 10.07.2026', 'computed'),
-    ('demo-smoke-4', 'demo-object-4', 'Дым', 'Дым ПК 03+10', '03+10', 3.1, 'Тревога', 'danger', 3.1, 'generated_demo', 'ТО 01.09.2026', 'demo')
+    ('demo-smoke-4', 'demo-object-4', 'Дым', 'Дым ПК 03+10', '03+10', 3.1, 'Тревога', 'danger', 3.1, 'generated_demo', 'ТО 01.09.2026', 'demo'),
+    ('demo-smoke-5', 'demo-object-5', 'Дым', 'Дым ПК 03+10', '03+10', 3.1, 'Дыма нет', 'normal', 1.8, 'generated_demo', 'ТО 11.08.2026', 'demo'),
+    ('demo-temp-5', 'demo-object-5', 'Температура', 'Температура ПК 03+20', '03+20', 3.2, '22 °C', 'normal', 2.1, 'generated_demo', 'ТО 11.08.2026', 'demo')
 on conflict (id) do update set display_value=excluded.display_value, display_state=excluded.display_state;
 
 insert into risk_alerts(id, episode_id, object_id, level, horizon, probability, p_now, p_6h, p_12h, p_24h,

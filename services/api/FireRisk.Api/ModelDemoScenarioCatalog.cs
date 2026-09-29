@@ -10,7 +10,10 @@ public sealed record ModelDemoSensor(
     string SensorType,
     string? Picket,
     string Value,
-    string State);
+    string State,
+    DateTimeOffset LastSeenAt);
+
+public sealed record ModelDemoEmployee(string Id, string Name, string Role);
 
 public sealed record ModelDemoInput(string Label, string Value);
 
@@ -22,6 +25,7 @@ public sealed record ModelDemoScenarioSummary(
     string District,
     string DangerousSection,
     IReadOnlyList<ModelDemoSensor> Sensors,
+    IReadOnlyList<ModelDemoEmployee> AssignedEmployees,
     IReadOnlyList<ModelDemoInput> Inputs);
 
 public sealed record ModelDemoScenario(
@@ -32,10 +36,11 @@ public sealed record ModelDemoScenario(
     string District,
     string DangerousSection,
     IReadOnlyList<ModelDemoSensor> Sensors,
+    IReadOnlyList<ModelDemoEmployee> AssignedEmployees,
     IReadOnlyDictionary<string, double?> Features)
 {
     public ModelDemoScenarioSummary ToSummary() =>
-        new(Id, SourceTimestamp, ObjectId, ObjectName, District, DangerousSection, Sensors, BuildInputs());
+        new(Id, SourceTimestamp, ObjectId, ObjectName, District, DangerousSection, Sensors, AssignedEmployees, BuildInputs());
 
     private IReadOnlyList<ModelDemoInput> BuildInputs() =>
     [
@@ -105,8 +110,14 @@ public sealed class ModelDemoScenarioCatalog
         foreach (var scenario in document.Scenarios)
         {
             if (string.IsNullOrWhiteSpace(scenario.Id) || string.IsNullOrWhiteSpace(scenario.ObjectId) ||
-                string.IsNullOrWhiteSpace(scenario.ObjectName) || string.IsNullOrWhiteSpace(scenario.District) || scenario.Sensors.Count == 0)
+                string.IsNullOrWhiteSpace(scenario.ObjectName) || string.IsNullOrWhiteSpace(scenario.District) || scenario.Sensors.Count != 6 ||
+                scenario.AssignedEmployees.Count != 2 ||
+                !scenario.AssignedEmployees.Any(employee => employee.Role == "Техник") ||
+                !scenario.AssignedEmployees.Any(employee => employee.Role == "Группа быстрого реагирования"))
                 throw new InvalidDataException("scenario context is incomplete");
+            if (scenario.Sensors.Any(sensor => sensor.LastSeenAt > scenario.SourceTimestamp) ||
+                scenario.AssignedEmployees.Any(employee => string.IsNullOrWhiteSpace(employee.Id) || string.IsNullOrWhiteSpace(employee.Name) || string.IsNullOrWhiteSpace(employee.Role)))
+                throw new InvalidDataException("scenario context contains invalid sensor or employee data");
             if (scenario.SourceTimestamp.Year != 2026)
                 throw new InvalidDataException("scenario is outside the held-out 2026 period");
             if (!expectedFeatures.SetEquals(scenario.Features.Keys))

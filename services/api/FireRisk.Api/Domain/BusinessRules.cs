@@ -9,9 +9,10 @@ public enum RequestKind { Inspection, Repair, Emergency }
 
 public static class RequestPolicy
 {
-    public static bool CanCreate(RequestCreatorRole creator, ExecutorGroup executor, RequestPriority priority) =>
+    public static bool CanCreate(RequestCreatorRole creator, AlertLevel level, ExecutorGroup executor, RequestPriority priority) =>
         creator == RequestCreatorRole.DistrictDispatcher ||
-        creator == RequestCreatorRole.OdsDispatcher && executor == ExecutorGroup.ResponseTeam && priority == RequestPriority.Emergency;
+        creator == RequestCreatorRole.OdsDispatcher &&
+        (level != AlertLevel.Black || executor == ExecutorGroup.ResponseTeam && priority == RequestPriority.Emergency);
 
     public static bool CanClaim(ExecutorGroup actorGroup, ExecutorGroup requestGroup, string? assigneeId, MaintenanceStatus status) =>
         actorGroup == requestGroup && string.IsNullOrWhiteSpace(assigneeId) && status is not MaintenanceStatus.Completed and not MaintenanceStatus.Rejected;

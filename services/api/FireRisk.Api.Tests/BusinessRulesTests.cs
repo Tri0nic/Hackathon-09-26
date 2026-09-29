@@ -6,16 +6,18 @@ namespace FireRisk.Api.Tests;
 public sealed class BusinessRulesTests
 {
     [Theory]
-    [InlineData(RequestCreatorRole.OdsDispatcher, ExecutorGroup.ResponseTeam, RequestPriority.Emergency, true)]
-    [InlineData(RequestCreatorRole.OdsDispatcher, ExecutorGroup.Technician, RequestPriority.Normal, false)]
-    [InlineData(RequestCreatorRole.DistrictDispatcher, ExecutorGroup.Technician, RequestPriority.Normal, true)]
+    [InlineData(RequestCreatorRole.OdsDispatcher, AlertLevel.Black, ExecutorGroup.ResponseTeam, RequestPriority.Emergency, true)]
+    [InlineData(RequestCreatorRole.OdsDispatcher, AlertLevel.Black, ExecutorGroup.Technician, RequestPriority.Normal, false)]
+    [InlineData(RequestCreatorRole.OdsDispatcher, AlertLevel.Yellow, ExecutorGroup.Technician, RequestPriority.Normal, true)]
+    [InlineData(RequestCreatorRole.DistrictDispatcher, AlertLevel.Black, ExecutorGroup.Technician, RequestPriority.Normal, true)]
     public void Request_creation_obeys_dispatcher_permissions(
         RequestCreatorRole creator,
+        AlertLevel level,
         ExecutorGroup executor,
         RequestPriority priority,
         bool expected)
     {
-        Assert.Equal(expected, RequestPolicy.CanCreate(creator, executor, priority));
+        Assert.Equal(expected, RequestPolicy.CanCreate(creator, level, executor, priority));
     }
 
     [Theory]

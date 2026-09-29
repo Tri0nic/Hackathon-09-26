@@ -48,6 +48,14 @@ export interface Channel {
   ageSource?: "first_seen" | "generated_demo" | "imported";
   maintenanceNote?: string;
   metadataSource?: string;
+  history?: SensorReading[];
+}
+
+export interface SensorReading {
+  measuredAt: string;
+  value: string;
+  state: "normal" | "warning" | "danger" | "malfunction";
+  numericValue?: number;
 }
 
 export interface RiskObject {
@@ -100,7 +108,10 @@ export interface ModelDemoSensor {
   picket?: string | null;
   value: string;
   state: string;
+  lastSeenAt?: string;
 }
+
+export interface ModelDemoEmployee { id: string; name: string; role: string }
 
 export interface ModelDemoInput {
   label: string;
@@ -115,6 +126,7 @@ export interface ModelDemoScenario {
   district: string;
   dangerousSection: string;
   sensors: ModelDemoSensor[];
+  assignedEmployees?: ModelDemoEmployee[];
   inputs: ModelDemoInput[];
 }
 

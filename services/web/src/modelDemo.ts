@@ -1,4 +1,4 @@
-import type { ModelDemoCalculation, ModelDemoFactor, ModelDemoInput, ModelDemoScenario } from "./types";
+import type { ModelDemoCalculation, ModelDemoFactor, ModelDemoInput, ModelDemoScenario, UserRole } from "./types";
 
 export interface ModelDemoState {
   scenarios: ModelDemoScenario[];
@@ -36,6 +36,9 @@ export function modelDemoReducer(state: ModelDemoState, action: ModelDemoAction)
 }
 
 export const canPublishModelDemo = (decisions: Record<string, boolean>): boolean => Object.values(decisions).some(Boolean);
+
+export const modelDemoPublicationPath = (role: UserRole, alertId: string): string | undefined =>
+  role === "district_dispatcher" || role === "ods_dispatcher" ? `/alerts/${alertId}` : undefined;
 
 const windowLabel = (feature: string): string => {
   const match = feature.match(/_(5m|30m|1h|6h|12h|24h)$/);
@@ -82,3 +85,31 @@ export function modelDemoScenarioLabel(inputs: ModelDemoInput[]): string {
   if (positive("События за 30 минут")) return "События оборудования";
   return "Штатная работа";
 }
+
+const plural = (value: number, one: string, few: string, many: string): string => {
+  const mod100 = value % 100;
+  if (mod100 >= 11 && mod100 <= 14) return many;
+  const mod10 = value % 10;
+  return mod10 === 1 ? one : mod10 >= 2 && mod10 <= 4 ? few : many;
+};
+
+export function modelDemoInputSummary(inputs: ModelDemoInput[]): { title: string; value: string }[] {
+  const values = new Map(inputs.map((input) => [input.label, input.value]));
+  const number = (label: string) => Number(values.get(label) ?? 0);
+  const eventCount = number("События за 30 минут");
+  const staleCount = number("Неактуальные каналы");
+  const alarms = number("Тревоги за 5 минут") + number("Неисправности за 5 минут") + number("Газовые тревоги за 5 минут");
+  const hasSmokeOrHeat = values.get("Дым или нагрев") === "Есть";
+  return [
+    { title: "Поступление данных", value: `${eventCount} ${plural(eventCount, "событие", "события", "событий")} за последние 30 минут` },
+    { title: "Тревожные признаки", value: alarms > 0 || hasSmokeOrHeat ? "Обнаружены за последние 5 минут" : "Не обнаружены за последние 5 минут" },
+    { title: "Качество данных", value: staleCount > 0 ? `${staleCount} ${plural(staleCount, "канал", "канала", "каналов")} без актуальных показаний` : "Все каналы передают актуальные показания" },
+  ];
+}
+
+export const modelDemoSensorStatus = (state: string): string => ({
+  danger: "Тревога",
+  warning: "Требует внимания",
+  malfunction: "Неисправность",
+  normal: "Норма",
+}[state] ?? "Статус не определён");

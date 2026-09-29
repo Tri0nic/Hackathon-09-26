@@ -7,14 +7,19 @@ const channels: Channel[] = [
   { id: "service-free", name: "Служебный канал без пикета", sensorType: "Диагностика", picketSortKey: null, value: "Нет связи", state: "malfunction", deviceAgeYears: 2, ageSource: "generated_demo", maintenanceNote: "Данные не предоставлены", metadataSource: "demo" }
 ];
 
+const normalChannels: Channel[] = [
+  { id: "smoke-west-1", name: "Дым ПК 3+10", sensorType: "Дым", picketRaw: "3+10", picketSortKey: 3.1, value: "Дыма нет", state: "normal", deviceAgeYears: 1.8, ageSource: "generated_demo", maintenanceNote: "ТО 11.08.2026", metadataSource: "demo" },
+  { id: "temp-west-1", name: "Температура ПК 3+20", sensorType: "Температура", picketRaw: "3+20", picketSortKey: 3.2, value: "22 °C", state: "normal", deviceAgeYears: 2.1, ageSource: "generated_demo", maintenanceNote: "ТО 11.08.2026", metadataSource: "demo" },
+];
+
 const alerts: AppData["alerts"] = [
   {
     id: "8d6fc5a1-06ef-49ee-839c-fb17d121d6cb", episodeId: "EP-2026-0927-014", objectId: "demo-object-1", objectName: "Коллектор №1 · участок Северный", kind: "fire", level: "red", horizon: "6h", probability: 0.82,
     pNow: 0.18, p6h: 0.82, p12h: 0.88, p24h: 0.93, calculatedAt: "2026-09-27T12:42:00+03:00", modelVersion: "catboost-e87d5604945b", stale: false, current: true, picketFrom: 12.5, picketTo: 12.9, channels,
     factors: [
-      { label: "Рост температуры", contribution: 0.34, detail: "+29 °C к суточному профилю" },
-      { label: "Сигнал дыма", contribution: 0.28, detail: "3 срабатывания за 15 минут" },
-      { label: "Газовая концентрация", contribution: 0.12, detail: "Рост в 2,1 раза за час" }
+      { label: "Рост температуры", contribution: 0.34, detail: "Температура выросла на 29 °C за сутки" },
+      { label: "Сигнал дыма", contribution: 0.28, detail: "Датчик дыма сработал 3 раза за 15 минут" },
+      { label: "Газовая концентрация", contribution: 0.12, detail: "Концентрация газа выросла в 2,1 раза за час" }
     ],
     recommendation: "Проверить участок ПК 12+50–12+90 и состояние пожарных датчиков в течение 30 минут.",
     context: "Демонстрационный контекст: на соседнем участке запланированы сварочные работы 27.09 с 12:00 до 16:00.",
@@ -28,7 +33,7 @@ const alerts: AppData["alerts"] = [
   },
   {
     id: "3c2d6307-33ac-40f4-a8c2-80ae9df140a7", episodeId: "EP-2026-0927-004", objectId: "demo-object-3", objectName: "Коллектор №7 · участок Центральный", kind: "fire", level: "green", horizon: "24h", probability: 0.41,
-    pNow: 0.03, p6h: 0.14, p12h: 0.25, p24h: 0.41, calculatedAt: "2026-09-27T12:14:00+03:00", modelVersion: "catboost-e87d5604945b", stale: false, current: true, channels: [channels[0]], factors: [{ label: "Температурный тренд", contribution: 0.18, detail: "+6 °C за 3 часа" }], recommendation: "Продолжить наблюдение.", context: "Данные о работах не предоставлены.", recipients: ["Диспетчер ОДС"], history: [{ toLevel: "green", changedAt: "2026-09-27T12:14:00+03:00" }], decisions: [{ decision: "Наблюдение", decidedAt: "2026-09-27T12:18:00+03:00" }]
+    pNow: 0.03, p6h: 0.14, p12h: 0.25, p24h: 0.41, calculatedAt: "2026-09-27T12:14:00+03:00", modelVersion: "catboost-e87d5604945b", stale: false, current: true, channels: [channels[0]], factors: [{ label: "Температурный тренд", contribution: 0.18, detail: "Температура выросла на 6 °C за 3 часа" }], recommendation: "Продолжить наблюдение.", context: "Данные о работах не предоставлены.", recipients: ["Диспетчер ОДС"], history: [{ toLevel: "green", changedAt: "2026-09-27T12:14:00+03:00" }], decisions: [{ decision: "Наблюдение", decidedAt: "2026-09-27T12:18:00+03:00" }]
   },
   {
     id: "44444444-4444-4444-4444-444444444444", episodeId: "EP-DEMO-BLACK", objectId: "demo-object-4", objectName: "Коллектор №9 · участок Южный", kind: "fire", level: "black", horizon: "now", probability: 0.91,
@@ -42,7 +47,8 @@ export const demoData: AppData = {
     { id: "demo-object-1", name: "Коллектор №1 · участок Северный", district: "САО", channelCount: 34, level: "red", probability: 0.82, channels },
     { id: "demo-object-2", name: "Коллектор №4 · участок Восточный", district: "ВАО", channelCount: 27, level: "yellow", probability: 0.67, channels: [{ ...channels[3], id: "service-east" }] },
     { id: "demo-object-3", name: "Коллектор №7 · участок Центральный", district: "ЦАО", channelCount: 41, level: "green", probability: 0.41, channels: [channels[0]] },
-    { id: "demo-object-4", name: "Коллектор №9 · участок Южный", district: "ЮАО", channelCount: 22, level: "black", probability: 0.91, channels: [channels[1]] }
+    { id: "demo-object-4", name: "Коллектор №9 · участок Южный", district: "ЮАО", channelCount: 22, level: "black", probability: 0.91, channels: [channels[1]] },
+    { id: "demo-object-5", name: "Коллектор №12 · участок Западный", district: "ЗАО", channelCount: 18, level: "green", probability: 0, channels: normalChannels }
   ],
   alerts,
   requests: [
