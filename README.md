@@ -59,18 +59,3 @@ docker compose up --build -d
 Демонстрационные записи имеют фиксированные идентификаторы и время. После
 `docker compose down -v` одинаковый запуск создаёт одинаковые объекты, уровни,
 возраст датчиков, историю и SMS.
-
-
-
-## Проверки разработчика
-
-```powershell
-Push-Location services/ml
-python -m pytest tests/test_ml_api.py -q
-Pop-Location
-powershell -ExecutionPolicy Bypass -File .\scripts\check-real-ml.ps1
-dotnet test --no-restore
-Set-Location services/web
-npm test -- --run
-npm run build
-```
