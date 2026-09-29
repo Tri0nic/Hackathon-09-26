@@ -56,6 +56,3 @@ docker compose up --build -d
 - API: `http://localhost:5000`;
 - ML health: `http://localhost:8000/health`.
 
-Демонстрационные записи имеют фиксированные идентификаторы и время. После
-`docker compose down -v` одинаковый запуск создаёт одинаковые объекты, уровни,
-возраст датчиков, историю и SMS.
