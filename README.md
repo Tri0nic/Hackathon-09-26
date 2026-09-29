@@ -60,20 +60,7 @@ docker compose up --build -d
 `docker compose down -v` одинаковый запуск создаёт одинаковые объекты, уровни,
 возраст датчиков, историю и SMS.
 
-## Недоступность ML
 
-API сохраняет последний успешный прогноз. Если ML временно недоступен, API
-возвращает этот прогноз с признаком `stale=true`, а интерфейс показывает
-предупреждение пользователю.
-
-Проверка:
-
-```powershell
-docker compose stop ml
-Invoke-RestMethod -Method Post -Uri http://localhost:5000/api/objects/demo-object-1/predict `
-  -ContentType application/json -Body '{"features":{"activity_ratio_24h":1.25,"alarm_count_5m":3,"smoke_heat_5m":1},"topK":3}'
-docker compose start ml
-```
 
 ## Проверки разработчика
 
